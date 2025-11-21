@@ -27,7 +27,7 @@ This is a GPU-accelerated Python implementation of UAV (Unmanned Aerial Vehicle)
 
 1. Clone or download this repository:
 ```bash
-cd UAV-Ground-Association-Optimizer-Python
+cd edge-uav-mec-optimizer
 ```
 
 2. Install dependencies:
@@ -43,12 +43,12 @@ pip install torch torchvision torchaudio --index-url https://download.pytorch.or
 ## Project Structure
 
 ```
-UAV-Ground-Association-Optimizer-Python/
-├── main.py                          # Main benchmarking script
-├── requirements.txt                 # Python dependencies
+edge-uav-mec-optimizer/
+├── main.py                         # Main benchmarking script
+├── requirements.txt                # Python library dependencies
 ├── README.md                       # This file
 └── util/
-    ├── constants.py                # System constants
+    ├── constants.py                # System constants (carrier frequency, transmit power, etc.)
     ├── benchmark_vals.py           # Benchmark parameter values
     ├── common/
     │   └── __init__.py            # Common utilities (p_received, association, bitrate, etc.)
@@ -71,7 +71,7 @@ python main.py
 ```
 
 This will:
-1. Detect available GPU (CUDA) or fall back to CPU
+1. Detect available GPU (CUDA) or fall back to CPU (It is a long calculation if on CPU).
 2. Run parameter sweeps (default: N sweep - number of UAVs)
 3. Generate plots comparing different algorithms
 4. Save results to PNG files
@@ -98,13 +98,13 @@ user_pos = SIDE * torch.rand(2, M, device=device)
 uav_pos_kmeans, rates_kmeans, throughput_kmeans = k_means_uav(
     user_pos, M, N, AREA, H_M, H, F, P_T, P_N, MAX_ITER, TOL, BW_total, device=device
 )
-print(f"K-means throughput: {throughput_kmeans:.2f} Mbps")
+print(f"K-means throughput: {throughput_kmeans:.6f} Mbps")
 
 # Method 2: Optimize from k-means initialization
 uav_pos_opt, bandwidth_opt, rates_opt, throughput_opt = optimize_network(
     M, N, uav_pos_kmeans, BW_total, AREA, user_pos, H_M, H, F, P_T, P_N, R_MIN, device=device
 )
-print(f"Optimized throughput: {throughput_opt:.2f} Mbps")
+print(f"Optimized throughput: {throughput_opt:.6f} Mbps")
 
 # Visualize network
 plot_network(user_pos, uav_pos_opt, H_M, H, F, P_T, "Optimized UAV Network")
@@ -196,7 +196,7 @@ The main script supports sweeps over:
 - **R_MIN** (QoS Requirement): [50, 200, 1000] kbps
 - **AREA**: [1, 4, 9, 16] ×10⁶ m²
 
-Uncomment the relevant sections in `main.py` to run additional sweeps.
+Uncomment the relevant sections in `main.py` to run the sweep you want.
 
 ## GPU Acceleration
 
@@ -211,7 +211,7 @@ Performance tips:
 - For very large problems, consider batch processing
 
 ## Differences from MATLAB Version
-
+Originally, this project was implemented on MATLAB. That version is now deprecated to allow for GPU acceleration.
 While the Python version is a faithful translation, there are minor differences:
 - **Optimization**: Uses `scipy.optimize.minimize` instead of MATLAB's `fmincon`
 - **Hierarchical clustering**: Uses `scipy.cluster.hierarchy` instead of MATLAB's built-in functions
@@ -245,7 +245,7 @@ If you use this code in your research, please cite:
 
 ```
 El Kaaki, K., & Abi Samra, J. (2025). 
-UAV-Ground Association Optimizer: GPU-Accelerated Python Implementation.
+Edge UAV-MEC Optimizer: GPU-Accelerated Python Implementation.
 ```
 
 ## License
