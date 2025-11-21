@@ -1,24 +1,24 @@
 """
 Common utility functions for UAV network optimization
 Author: Khalil El Kaaki & Joe Abi Samra
-Date: 23/10/2025
-Translated to Python with GPU support using PyTorch
 """
-
 import torch
 import numpy as np
-
 
 def p_received(user_pos, uav_pos, H_M, H, F, P_T, device='cuda'):
     """
     Calculates the received power using the Okumura-Hata model.
     
+    CRITICAL: Ensures proper unit conversions:
+    - F input is in Hz, converted to MHz internally
+    - Distances calculated in meters, converted to km for path loss formula
+    
     Args:
-        user_pos: Tensor of shape (2, M) - user positions (x, y)
-        uav_pos: Tensor of shape (2, N) - UAV positions (x, y)
-        H_M: Mobile height in meters
-        H: UAV height in meters
-        F: Frequency in Hz
+        user_pos: Tensor of shape (2, M) - user positions (x, y) in METERS
+        uav_pos: Tensor of shape (2, N) - UAV positions (x, y) in METERS
+        H_M: Mobile height in METERS
+        H: UAV height in METERS
+        F: Frequency in HZ (will be converted to MHz internally)
         P_T: Transmit power in dBm
         device: 'cuda' or 'cpu'
     
@@ -42,18 +42,28 @@ def p_received(user_pos, uav_pos, H_M, H, F, P_T, device='cuda'):
     x_n = uav_pos[0, :].unsqueeze(0)   # (1, N)
     y_n = uav_pos[1, :].unsqueeze(0)   # (1, N)
     
-    # Calculate 3D distances (MxN matrix)
-    d = torch.sqrt((x_m - x_n)**2 + (y_m - y_n)**2 + H**2)
+    # Calculate 3D distances in METERS
+    d_m = torch.sqrt((x_m - x_n)**2 + (y_m - y_n)**2 + H**2)  # (M, N) in meters
+    
+    # Unit conversions for Okumura-Hata model, model requires frequency in MHz and distance in km
+    F_MHz = F / 1e6  # Hz -> MHz
+    d_km = d_m / 1000.0  # meters -> km
+    
+    # Assertion for sanity check
+    assert F_MHz > 0 and F_MHz < 1e6, f"Frequency {F_MHz} MHz out of reasonable range. Make sure F is in Hz."
     
     # Okumura-Hata path loss model (vectorized)
-    F_MHz = F / 1e6  # Convert to MHz for the model
-    C_h = 0.8 + (1.1 * torch.log10(torch.tensor(F_MHz, device=device)) - 0.7) * H_M - 1.56 * torch.log10(torch.tensor(F_MHz, device=device))
-    L_u = 69.55 + 26.16 * torch.log10(torch.tensor(F_MHz, device=device)) - 13.82 * torch.log10(torch.tensor(H, device=device)) - C_h + \
-          (44.9 - 6.55 * torch.log10(torch.tensor(H, device=device))) * torch.log10(d)
-    L = L_u - 4.78 * (torch.log10(torch.tensor(F_MHz, device=device)))**2 + 18.33 * torch.log10(torch.tensor(F_MHz, device=device)) - 40.94
+    # Reference: Okumura-Hata model for suburban/rural environments
+    F_MHz_tensor = torch.tensor(F_MHz, device=device, dtype=torch.float32)
+    H_tensor = torch.tensor(H, device=device, dtype=torch.float32)
+    
+    C_h = 0.8 + (1.1 * torch.log10(F_MHz_tensor) - 0.7) * H_M - 1.56 * torch.log10(F_MHz_tensor)
+    L_u = 69.55 + 26.16 * torch.log10(F_MHz_tensor) - 13.82 * torch.log10(H_tensor) - C_h + \
+          (44.9 - 6.55 * torch.log10(H_tensor)) * torch.log10(d_km)
+    L = L_u - 4.78 * (torch.log10(F_MHz_tensor))**2 + 18.33 * torch.log10(F_MHz_tensor) - 40.94
     
     # Received power in dBm
-    p_r = P_T - L
+    p_r = P_T - L  # (M, N)
     
     return p_r
 
@@ -104,7 +114,7 @@ def se(P_R, P_N, ASSOCIATION_MATRIX):
     SNR = P_r_lin / P_n_lin  # (M, N)
     
     # Shannon capacity formula
-    SE = torch.log2(1 + SNR) * ASSOCIATION_MATRIX  # (M, N)
+    SE = torch.log2(1 + SNR) * ASSOCIATION_MATRIX  # (M, N) bps/Hz, zeroed for non-associated links
     
     return SE
 
@@ -225,3 +235,58 @@ def throughput(OFFLOADING, DATA, bandwidth, USER_POS, uav_pos, H_M, H, F, P_T, P
          (DATA * OFFLOADING_COMPLEMENT * 1/T_local_m)
     
     return th
+
+
+def compute_mec_throughput(R_m, o_m, D_m, C_m, f_UAV, f_user, device='cuda'):
+    """
+    Computes MEC throughput per user using fractional offloading model.
+    
+    Fractional offloading formula:
+    - T_ul(o) = o_m * D_m / R_m (uplink transmission time)
+    - T_comp(o) = o_m * C_m / f_UAV (computation time at UAV)
+    - T_dl(o) = o_m * D_m / R_m (downlink transmission time, symmetric)
+    - T_local = C_m / f_user (local computation time)
+    - Th_m(o) = o_m * D_m / (T_ul + T_comp + T_dl) + (1 - o_m) * D_m / T_local
+    
+    Args:
+        R_m: Tensor (M,) - per-user uplink/downlink data rate (bps)
+        o_m: Tensor (M,) - offloading fraction [0, 1]
+        D_m: Scalar or Tensor (M,) - task data size (bits)
+        C_m: Scalar or Tensor (M,) - computational complexity (CPU cycles)
+        f_UAV: Scalar - UAV CPU frequency (Hz)
+        f_user: Scalar - user device CPU frequency (Hz)
+        device: 'cuda' or 'cpu'
+    
+    Returns:
+        Th_m: Tensor (M,) - MEC throughput per user (bps)
+    """
+    # Ensure tensors
+    if not isinstance(R_m, torch.Tensor):
+        R_m = torch.tensor(R_m, dtype=torch.float32, device=device)
+    if not isinstance(o_m, torch.Tensor):
+        o_m = torch.tensor(o_m, dtype=torch.float32, device=device)
+    
+    # Clamp R_m to avoid division by zero
+    R_m = torch.maximum(R_m, torch.tensor(1e-6, device=device))
+    
+    # Offloading times (in seconds)
+    T_ul = o_m * D_m / R_m  # Uplink time
+    T_comp = o_m * C_m / f_UAV  # Computation time at UAV
+    T_dl = o_m * D_m / R_m  # Downlink time (symmetric UL/DL)
+    T_offload_total = T_ul + T_comp + T_dl
+    
+    # Local computation time (in seconds)
+    T_local = C_m / f_user
+    
+    # MEC throughput (bps)
+    # Offloaded portion: o_m * D_m / T_offload_total
+    # Local portion: (1 - o_m) * D_m / T_local
+    Th_offload = torch.where(o_m > 0, o_m * D_m / torch.maximum(T_offload_total, torch.tensor(1e-9, device=device)), torch.zeros_like(o_m))
+    Th_local = (1 - o_m) * D_m / T_local
+    Th_m = Th_offload + Th_local
+    
+    # Clamp to avoid numerical issues
+    Th_m = torch.maximum(Th_m, torch.tensor(1e-9, device=device))
+    
+    return Th_m
+

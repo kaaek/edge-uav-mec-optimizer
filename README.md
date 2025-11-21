@@ -8,12 +8,15 @@
 
 This is a GPU-accelerated Python implementation of UAV (Unmanned Aerial Vehicle) positioning and bandwidth allocation optimization for wireless communication networks. The system maximizes network throughput while ensuring Quality of Service (QoS) constraints for ground users.
 
+**Extended for Multi-Access Edge Computing (MEC):** This implementation now supports task offloading scenarios where users can choose to execute computational tasks locally or offload them to UAVs. See `MEC_EXTENSION.md` for details.
+
 **Key Features:**
 - GPU acceleration using PyTorch for fast tensor operations
 - Faithful translation from MATLAB preserving all original logic
 - Support for both CUDA and CPU execution
 - Multiple UAV placement strategies (K-means, Hierarchical clustering)
-- Joint optimization of UAV positions and bandwidth allocation
+- Joint optimization of UAV positions, bandwidth allocation, and task offloading
+- MEC-aware throughput modeling with fractional offloading
 - Comprehensive benchmarking suite with parameter sweeps
 
 ## Installation
@@ -45,17 +48,20 @@ pip install torch torchvision torchaudio --index-url https://download.pytorch.or
 ```
 edge-uav-mec-optimizer/
 ├── main.py                         # Main benchmarking script
+├── test.py                         # Quick verification script
 ├── requirements.txt                # Python library dependencies
 ├── README.md                       # This file
+├── MEC_EXTENSION.md                # MEC extension documentation
+├── TRANSLATION_SUMMARY.md          # Translation notes
 └── util/
-    ├── constants.py                # System constants (carrier frequency, transmit power, etc.)
+    ├── constants.py                # System constants (includes MEC parameters)
     ├── benchmark_vals.py           # Benchmark parameter values
     ├── common/
-    │   └── __init__.py            # Common utilities (p_received, association, bitrate, etc.)
+    │   └── __init__.py            # Common utilities (p_received, association, bitrate, compute_mec_throughput, etc.)
     ├── clustering/
     │   └── __init__.py            # Clustering algorithms (k_means, hierarchical)
     ├── optimizers/
-    │   ├── __init__.py            # Main optimizers (optimize_network, etc.)
+    │   ├── __init__.py            # Main optimizers (optimize_network with MEC support, etc.)
     │   └── helpers/
     │       └── __init__.py        # Helper functions (constraints, objectives)
     └── plotter/
@@ -85,8 +91,9 @@ from util.clustering import k_means_uav, hierarchical_uav
 from util.optimizers import optimize_network
 from util.plotter import plot_network
 
-# Get system parameters
-M, N, AREA, H, H_M, F, K, GAMMA, D_0, P_T, P_N, MAX_ITER, TOL, BW_total, R_MIN, SIDE, TRIALS = constants()
+# Get system parameters (including MEC parameters)
+M, N, AREA, H, H_M, F, K, GAMMA, D_0, P_T, P_N, MAX_ITER, TOL, \
+    BW_total, R_MIN, SIDE, TRIALS, D_m, C_m, f_UAV, f_user = constants()
 
 # Set device
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
@@ -100,14 +107,17 @@ uav_pos_kmeans, rates_kmeans, throughput_kmeans = k_means_uav(
 )
 print(f"K-means throughput: {throughput_kmeans:.6f} Mbps")
 
-# Method 2: Optimize from k-means initialization
-uav_pos_opt, bandwidth_opt, rates_opt, throughput_opt = optimize_network(
-    M, N, uav_pos_kmeans, BW_total, AREA, user_pos, H_M, H, F, P_T, P_N, R_MIN, device=device
+# Method 2: MEC-aware optimization from k-means initialization
+uav_pos_opt, bandwidth_opt, offload_opt, throughput_opt_arr, throughput_opt = optimize_network(
+    M, N, uav_pos_kmeans, BW_total, AREA, user_pos, H_M, H, F, P_T, P_N, R_MIN,
+    D_m, C_m, f_UAV, f_user,  # MEC parameters
+    device=device
 )
-print(f"Optimized throughput: {throughput_opt:.6f} Mbps")
+print(f"MEC-optimized throughput: {throughput_opt:.6f} Mbps")
+print(f"Average offloading fraction: {offload_opt.mean():.3f}")
 
 # Visualize network
-plot_network(user_pos, uav_pos_opt, H_M, H, F, P_T, "Optimized UAV Network")
+plot_network(user_pos, uav_pos_opt, H_M, H, F, P_T, "Optimized UAV-MEC Network")
 ```
 
 ## Core Modules
@@ -125,6 +135,11 @@ plot_network(user_pos, uav_pos_opt, H_M, H, F, P_T, "Optimized UAV Network")
 - **`bitrate(P_R, P_N, BW, ASSOCIATION_MATRIX)`**
   - Calculates achievable bitrates using Shannon capacity
   - Returns: (M, N) tensor of bitrates in bps
+
+- **`compute_mec_throughput(R_m, o_m, D_m, C_m, f_UAV, f_user, device='cuda')`**
+  - Computes MEC throughput with fractional offloading
+  - Th_m = o_m × D_m / (T_ul + T_comp + T_dl) + (1 - o_m) × D_m / T_local
+  - Returns: (M,) tensor of MEC throughputs in bps
 
 - **`se(P_R, P_N, ASSOCIATION_MATRIX)`**
   - Calculates spectral efficiency (bps/Hz)
@@ -146,10 +161,11 @@ plot_network(user_pos, uav_pos_opt, H_M, H, F, P_T, "Optimized UAV Network")
 
 ### Optimization (`util/optimizers/`)
 
-- **`optimize_network(M, N, INITIAL_UAV_POS, BW_total, AREA, user_pos, H_M, H, F, P_T, P_N, Rmin, device='cuda')`**
-  - Joint optimization of UAV positions and bandwidth allocation
-  - Uses proportional fairness objective
-  - Returns: optimized UAV positions, bandwidth allocation, rates, throughput
+- **`optimize_network(M, N, INITIAL_UAV_POS, BW_total, AREA, user_pos, H_M, H, F, P_T, P_N, Rmin, D_m, C_m, f_UAV, f_user, device='cuda')`**
+  - Joint optimization of UAV positions, bandwidth allocation, and task offloading (MEC-aware)
+  - Uses proportional fairness objective: maximize Σ log(Th_m)
+  - Constraints: QoS (Th_m ≥ Rmin), bandwidth budget, CPU capacity per UAV
+  - Returns: optimized UAV positions, bandwidth allocation, offloading fractions, throughputs, sum throughput
 
 - **`optimize_uav_positions(N, AREA, uav_pos, user_pos, H_M, H, F, P_T, P_N, BW, Rmin, device='cuda')`**
   - Optimizes only UAV positions (fixed bandwidth)
@@ -172,6 +188,8 @@ plot_network(user_pos, uav_pos_opt, H_M, H, F, P_T, "Optimized UAV Network")
 
 Default parameters (defined in `util/constants.py`):
 
+### Wireless System
+
 | Parameter | Value | Description |
 |-----------|-------|-------------|
 | M | 50 | Number of ground users |
@@ -183,8 +201,17 @@ Default parameters (defined in `util/constants.py`):
 | P_T | 30 dBm | Transmit power |
 | P_N | -91 dBm | Noise power |
 | BW_total | 40 MHz | Total bandwidth |
-| R_MIN | 0.2 Mbps | Minimum QoS rate |
+| R_MIN | 0.2 Mbps | Minimum QoS throughput |
 | TRIALS | 50 | Monte Carlo trials |
+
+### MEC Parameters
+
+| Parameter | Value | Description |
+|-----------|-------|-------------|
+| D_m | 5×10⁶ bits | Task data size (5 Mbit) |
+| C_m | 1×10⁹ cycles | Computational complexity (1 Gcycles) |
+| f_UAV | 10×10⁹ Hz | UAV CPU frequency (10 GHz) |
+| f_user | 1×10⁹ Hz | User CPU frequency (1 GHz) |
 
 ## Benchmark Sweeps
 

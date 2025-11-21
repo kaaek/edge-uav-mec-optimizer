@@ -21,7 +21,7 @@ if device == 'cuda':
     print(f"GPU: {torch.cuda.get_device_name(0)}")
 
 # Get constants
-M, N, AREA, H, H_M, F, K, GAMMA, D_0, P_T, P_N, MAX_ITER, TOL, BW_total, R_MIN, SIDE, TRIALS = constants()
+M, N, AREA, H, H_M, F, K, GAMMA, D_0, P_T, P_N, MAX_ITER, TOL, BW_total, R_MIN, SIDE, TRIALS, D_m, C_m, f_UAV, f_user = constants()
 
 print(f"\nTest Parameters:")
 print(f"  Users: {M}")
@@ -38,7 +38,7 @@ print("\n" + "=" * 70)
 print("Test 1: K-means Clustering")
 print("=" * 70)
 uav_pos_kmeans, rates_kmeans, throughput_kmeans = k_means_uav(
-    user_pos, M, N, AREA, H_M, H, F, P_T, P_N, MAX_ITER, TOL, BW_total, device=device
+    user_pos, M, N, AREA, H_M, H, F, P_T, P_N, MAX_ITER, TOL, BW_total, D_m, C_m, f_UAV, f_user, device=device
 )
 print(f"✓ K-means completed")
 print(f"  Throughput: {throughput_kmeans:.6f} Mbps")
@@ -48,7 +48,7 @@ print("\n" + "=" * 70)
 print("Test 2: Hierarchical Clustering")
 print("=" * 70)
 uav_pos_hier, rates_hier, throughput_hier = hierarchical_uav(
-    user_pos, N, H_M, H, F, P_T, P_N, BW_total, device=device
+    user_pos, N, H_M, H, F, P_T, P_N, BW_total, D_m, C_m, f_UAV, f_user, device=device
 )
 print(f"✓ Hierarchical clustering completed")
 print(f"  Throughput: {throughput_hier:.6f} Mbps")
@@ -58,8 +58,8 @@ print("\n" + "=" * 70)
 print("Test 3: Network Optimization (K-means)")
 print("=" * 70)
 print("Optimizing from K-means initialization...")
-uav_pos_opt_kmeans, bandwidth_opt_kmeans, rates_opt_kmeans, throughput_opt_kmeans = optimize_network(
-    M, N, uav_pos_kmeans, BW_total, AREA, user_pos, H_M, H, F, P_T, P_N, R_MIN, device=device
+uav_pos_opt_kmeans, bandwidth_opt_kmeans, offload_opt_kmeans, rates_opt_kmeans, throughput_opt_kmeans = optimize_network(
+    M, N, uav_pos_kmeans, BW_total, AREA, user_pos, H_M, H, F, P_T, P_N, R_MIN, D_m, C_m, f_UAV, f_user, device=device
 )
 print(f"✓ K-means optimization completed")
 print(f"  Optimized Throughput: {throughput_opt_kmeans:.6f} Mbps")
@@ -69,8 +69,8 @@ print("\n" + "=" * 70)
 print("Test 4: Network Optimization (Hierarchical)")
 print("=" * 70)
 print("Optimizing from Hierarchical initialization...")
-uav_pos_opt_hier, bandwidth_opt_hier, rates_opt_hier, throughput_opt_hier = optimize_network(
-    M, N, uav_pos_hier, BW_total, AREA, user_pos, H_M, H, F, P_T, P_N, R_MIN, device=device
+uav_pos_opt_hier, bandwidth_opt_hier, offload_opt_hier, rates_opt_hier, throughput_opt_hier = optimize_network(
+    M, N, uav_pos_hier, BW_total, AREA, user_pos, H_M, H, F, P_T, P_N, R_MIN, D_m, C_m, f_UAV, f_user, device=device
 )
 print(f"✓ Hierarchical optimization completed")
 print(f"  Optimized Throughput: {throughput_opt_hier:.6f} Mbps")

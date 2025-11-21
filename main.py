@@ -1,12 +1,7 @@
 """
-Main benchmarking script for UAV-Ground Association Optimizer
+Main benchmarking script for Edge UAV-MEC Optimizer. This script performs parameter sweeps to evaluate different UAV positioning algorithms.
 Author: Khalil El Kaaki & Joe Abi Samra
-Date: 23/10/2025
-Translated to Python with GPU support
-
-This script performs parameter sweeps to evaluate different UAV positioning algorithms.
 """
-
 import torch
 import numpy as np
 import matplotlib.pyplot as plt
@@ -15,6 +10,7 @@ from util.constants import constants
 from util.benchmark_vals import benchmark_vals
 from util.clustering import k_means_uav, hierarchical_uav
 from util.optimizers import optimize_network
+from util.optimizers.batch_optimizer import batch_optimize_trials
 from util.plotter import plot_sweep
 
 # Check for CUDA availability
@@ -25,10 +21,10 @@ if device == 'cuda':
 else:
     print("CUDA not available. Running on CPU.")
     print("To enable GPU acceleration, install PyTorch with CUDA:")
-    print("  pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu118")
+    print("  pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu130")
 
 # Get constants
-M, N, AREA, H, H_M, F, K, GAMMA, D_0, P_T, P_N, MAX_ITER, TOL, BW_total, R_MIN, SIDE, TRIALS = constants()
+M, N, AREA, H, H_M, F, K, GAMMA, D_0, P_T, P_N, MAX_ITER, TOL, BW_total, R_MIN, SIDE, TRIALS, D_m, C_m, f_UAV, f_user = constants()
 
 # Get benchmark values
 N_vals, M_vals, BW_vals, P_t_vals, Rmin_vals, Area_vals = benchmark_vals()
@@ -58,81 +54,95 @@ for j in range(TRIALS):
     user_pos = SIDE * torch.rand(2, M, device=device)
     user_pos_trials.append(user_pos)
 
-# Common arrays for storing trial results
-trials_kmeans_ref = np.zeros(TRIALS)
-trials_kmeans_opt = np.zeros(TRIALS)
-trials_hier_ref = np.zeros(TRIALS)
-trials_hier_opt = np.zeros(TRIALS)
-
 # # ========================================================================
 # # N Sweep (Number of UAVs)
 # # ========================================================================
-# print("\n" + "=" * 70)
-# print("SWEEP 1: Number of UAVs (N)")
-# print("=" * 70)
+print("\n" + "=" * 70)
+print("SWEEP 1: Number of UAVs (N)")
+print("=" * 70)
 
-# sumrate_kmeans_ref_arr = np.zeros(len(N_vals))
-# sumrate_kmeans_opt_arr = np.zeros(len(N_vals))
-# sumrate_hier_ref_arr = np.zeros(len(N_vals))
-# sumrate_hier_opt_arr = np.zeros(len(N_vals))
+sumrate_kmeans_ref_arr = np.zeros(len(N_vals))
+sumrate_kmeans_opt_arr = np.zeros(len(N_vals))
+sumrate_hier_ref_arr = np.zeros(len(N_vals))
+sumrate_hier_opt_arr = np.zeros(len(N_vals))
 
-# start_time_total = time.time()
+start_time_total = time.time()
 
-# for i, n in enumerate(N_vals):
-#     print(f"\nN = {n} ({i+1}/{len(N_vals)})")
-#     start_time = time.time()
+for i, n in enumerate(N_vals):
+    print(f"\nN = {n} ({i+1}/{len(N_vals)})")
+    start_time = time.time()
     
-#     for j in range(TRIALS):
-#         if (j + 1) % 10 == 0:
-#             print(f"  Trial {j+1}/{TRIALS}...", end='\r')
-        
-#         user_pos = user_pos_trials[j]
-        
-#         # K-means Clustering
-#         uav_pos_kmeans, _, sumrate = k_means_uav(user_pos, M, n, AREA, H_M, H, F, P_T, P_N, MAX_ITER, TOL, BW_total, device=device)
-#         trials_kmeans_ref[j] = sumrate.cpu().item() if isinstance(sumrate, torch.Tensor) else sumrate
-        
-#         # Optimize from k-means initial position
-#         uav_pos_opt_kmeans, _, _, sumrate = optimize_network(M, n, uav_pos_kmeans, BW_total, AREA, user_pos, H_M, H, F, P_T, P_N, R_MIN, device=device)
-#         trials_kmeans_opt[j] = sumrate
-        
-#         # Hierarchical Clustering
-#         uav_pos_hier, _, sumrate = hierarchical_uav(user_pos, n, H_M, H, F, P_T, P_N, BW_total, device=device)
-#         trials_hier_ref[j] = sumrate.cpu().item() if isinstance(sumrate, torch.Tensor) else sumrate
-        
-#         # Optimize from hierarchical initial position
-#         uav_pos_opt_hier, _, _, sumrate = optimize_network(M, n, uav_pos_hier, BW_total, AREA, user_pos, H_M, H, F, P_T, P_N, R_MIN, device=device)
-#         trials_hier_opt[j] = sumrate
+    # Run K-means trials in parallel
+    kmeans_baseline, kmeans_optimized = batch_optimize_trials(
+        user_pos_trials=user_pos_trials,
+        M=M,
+        N=n,
+        AREA=AREA,
+        H_M=H_M,
+        H=H,
+        F=F,
+        P_T=P_T,
+        P_N=P_N,
+        MAX_ITER=MAX_ITER,
+        TOL=TOL,
+        BW_total=BW_total,
+        R_MIN=R_MIN,
+        D_m=D_m,
+        C_m=C_m,
+        f_UAV=f_UAV,
+        f_user=f_user,
+        device=device,
+        num_workers=2,
+        clustering_method='kmeans'
+    )
     
-#     # Compute averages
-#     sumrate_kmeans_ref_arr[i] = np.mean(trials_kmeans_ref)
-#     sumrate_kmeans_opt_arr[i] = np.mean(trials_kmeans_opt)
-#     sumrate_hier_ref_arr[i] = np.mean(trials_hier_ref)
-#     sumrate_hier_opt_arr[i] = np.mean(trials_hier_opt)
+    # Run hierarchical trials in parallel
+    hier_baseline, hier_optimized = batch_optimize_trials(
+        user_pos_trials=user_pos_trials,
+        M=M,
+        N=n,
+        AREA=AREA,
+        H_M=H_M,
+        H=H,
+        F=F,
+        P_T=P_T,
+        P_N=P_N,
+        MAX_ITER=MAX_ITER,
+        TOL=TOL,
+        BW_total=BW_total,
+        R_MIN=R_MIN,
+        D_m=D_m,
+        C_m=C_m,
+        f_UAV=f_UAV,
+        f_user=f_user,
+        device=device,
+        num_workers=2,
+        clustering_method='hierarchical'
+    )
     
-#     elapsed = time.time() - start_time
-#     print(f"  N={n} completed in {elapsed:.1f}s")
-#     print(f"    K-means Ref: {sumrate_kmeans_ref_arr[i]:.2f} Mbps")
-#     print(f"    K-means Opt: {sumrate_kmeans_opt_arr[i]:.2f} Mbps")
-#     print(f"    Hier Ref: {sumrate_hier_ref_arr[i]:.2f} Mbps")
-#     print(f"    Hier Opt: {sumrate_hier_opt_arr[i]:.2f} Mbps")
+    # Extract results (compute means from lists)
+    sumrate_kmeans_ref_arr[i] = np.mean(kmeans_baseline)
+    sumrate_kmeans_opt_arr[i] = np.mean(kmeans_optimized)
+    sumrate_hier_ref_arr[i] = np.mean(hier_baseline)
+    sumrate_hier_opt_arr[i] = np.mean(hier_optimized)
     
-#     # Reset trial arrays
-#     trials_kmeans_ref = np.zeros(TRIALS)
-#     trials_kmeans_opt = np.zeros(TRIALS)
-#     trials_hier_ref = np.zeros(TRIALS)
-#     trials_hier_opt = np.zeros(TRIALS)
+    elapsed = time.time() - start_time
+    print(f"  N={n} completed in {elapsed:.1f}s")
+    print(f"    K-means Ref: {sumrate_kmeans_ref_arr[i]:.2f} Mbps")
+    print(f"    K-means Opt: {sumrate_kmeans_opt_arr[i]:.2f} Mbps")
+    print(f"    Hier Ref: {sumrate_hier_ref_arr[i]:.2f} Mbps")
+    print(f"    Hier Opt: {sumrate_hier_opt_arr[i]:.2f} Mbps")
 
-# total_elapsed = time.time() - start_time_total
-# print(f"\nN Sweep completed in {total_elapsed:.1f}s")
+total_elapsed = time.time() - start_time_total
+print(f"\nN Sweep completed in {total_elapsed:.1f}s")
 
-# # Plot N sweep results
-# fig = plot_sweep(N_vals, sumrate_kmeans_ref_arr, sumrate_kmeans_opt_arr, 
-#                  sumrate_hier_ref_arr, sumrate_hier_opt_arr, 
-#                  'Number of UAVs (N)', 
-#                  'Variation of the Sum Rate Relative to the Number of UAVs')
-# plt.savefig('n_sweep_results.png', dpi=300, bbox_inches='tight')
-# print("Saved plot: n_sweep_results.png")
+# Plot N sweep results
+fig = plot_sweep(N_vals, sumrate_kmeans_ref_arr, sumrate_kmeans_opt_arr, 
+                 sumrate_hier_ref_arr, sumrate_hier_opt_arr, 
+                 'Number of UAVs (N)', 
+                 'Variation of the Sum Rate Relative to the Number of UAVs')
+plt.savefig('n_sweep_results.png', dpi=300, bbox_inches='tight')
+print("Saved plot: n_sweep_results.png")
 
 # # ========================================================================
 # # Uncomment sections below to run additional sweeps
@@ -148,8 +158,11 @@ trials_hier_opt = np.zeros(TRIALS)
 # sumrate_hier_ref_arr = np.zeros(len(M_vals))
 # sumrate_hier_opt_arr = np.zeros(len(M_vals))
 
+# start_time_total = time.time()
+
 # for i, m in enumerate(M_vals):
 #     print(f"\nM = {m} ({i+1}/{len(M_vals)})")
+#     start_time = time.time()
     
 #     # Generate new user positions for this M
 #     user_pos_trials_m = []
@@ -159,43 +172,76 @@ trials_hier_opt = np.zeros(TRIALS)
 #         user_pos = SIDE * torch.rand(2, m, device=device)
 #         user_pos_trials_m.append(user_pos)
     
-#     for j in range(TRIALS):
-#         if (j + 1) % 10 == 0:
-#             print(f"  Trial {j+1}/{TRIALS}...", end='\r')
-        
-#         user_pos = user_pos_trials_m[j]
-        
-#         # K-means
-#         uav_pos_kmeans, _, sumrate = k_means_uav(user_pos, m, N, AREA, H_M, H, F, P_T, P_N, MAX_ITER, TOL, BW_total, device=device)
-#         trials_kmeans_ref[j] = sumrate.cpu().item() if isinstance(sumrate, torch.Tensor) else sumrate
-        
-#         uav_pos_opt_kmeans, _, _, sumrate = optimize_network(m, N, uav_pos_kmeans, BW_total, AREA, user_pos, H_M, H, F, P_T, P_N, R_MIN, device=device)
-#         trials_kmeans_opt[j] = sumrate
-        
-#         # Hierarchical
-#         uav_pos_hier, _, sumrate = hierarchical_uav(user_pos, N, H_M, H, F, P_T, P_N, BW_total, device=device)
-#         trials_hier_ref[j] = sumrate.cpu().item() if isinstance(sumrate, torch.Tensor) else sumrate
-        
-#         uav_pos_opt_hier, _, _, sumrate = optimize_network(m, N, uav_pos_hier, BW_total, AREA, user_pos, H_M, H, F, P_T, P_N, R_MIN, device=device)
-#         trials_hier_opt[j] = sumrate
+#     # Run K-means trials in parallel
+#     kmeans_baseline, kmeans_optimized = batch_optimize_trials(
+#         user_pos_trials=user_pos_trials_m,
+#         M=m,
+#         N=N,
+#         AREA=AREA,
+#         H_M=H_M,
+#         H=H,
+#         F=F,
+#         P_T=P_T,
+#         P_N=P_N,
+#         MAX_ITER=MAX_ITER,
+#         TOL=TOL,
+#         BW_total=BW_total,
+#         R_MIN=R_MIN,
+#         D_m=D_m,
+#         C_m=C_m,
+#         f_UAV=f_UAV,
+#         f_user=f_user,
+#         device=device,
+#         num_workers=2,
+#         clustering_method='kmeans'
+#     )
     
-#     sumrate_kmeans_ref_arr[i] = np.mean(trials_kmeans_ref)
-#     sumrate_kmeans_opt_arr[i] = np.mean(trials_kmeans_opt)
-#     sumrate_hier_ref_arr[i] = np.mean(trials_hier_ref)
-#     sumrate_hier_opt_arr[i] = np.mean(trials_hier_opt)
+#     # Run hierarchical trials in parallel
+#     hier_baseline, hier_optimized = batch_optimize_trials(
+#         user_pos_trials=user_pos_trials_m,
+#         M=m,
+#         N=N,
+#         AREA=AREA,
+#         H_M=H_M,
+#         H=H,
+#         F=F,
+#         P_T=P_T,
+#         P_N=P_N,
+#         MAX_ITER=MAX_ITER,
+#         TOL=TOL,
+#         BW_total=BW_total,
+#         R_MIN=R_MIN,
+#         D_m=D_m,
+#         C_m=C_m,
+#         f_UAV=f_UAV,
+#         f_user=f_user,
+#         device=device,
+#         num_workers=2,
+#         clustering_method='hierarchical'
+#     )
     
-#     print(f"  M={m} - K-means Opt: {sumrate_kmeans_opt_arr[i]:.2f} Mbps, Hier Opt: {sumrate_hier_opt_arr[i]:.2f} Mbps")
+#     # Extract results
+#     sumrate_kmeans_ref_arr[i] = np.mean(kmeans_baseline)
+#     sumrate_kmeans_opt_arr[i] = np.mean(kmeans_optimized)
+#     sumrate_hier_ref_arr[i] = np.mean(hier_baseline)
+#     sumrate_hier_opt_arr[i] = np.mean(hier_optimized)
     
-#     trials_kmeans_ref = np.zeros(TRIALS)
-#     trials_kmeans_opt = np.zeros(TRIALS)
-#     trials_hier_ref = np.zeros(TRIALS)
-#     trials_hier_opt = np.zeros(TRIALS)
+#     elapsed = time.time() - start_time
+#     print(f"  M={m} completed in {elapsed:.1f}s")
+#     print(f"    K-means Ref: {sumrate_kmeans_ref_arr[i]:.2f} Mbps")
+#     print(f"    K-means Opt: {sumrate_kmeans_opt_arr[i]:.2f} Mbps")
+#     print(f"    Hier Ref: {sumrate_hier_ref_arr[i]:.2f} Mbps")
+#     print(f"    Hier Opt: {sumrate_hier_opt_arr[i]:.2f} Mbps")
+
+# total_elapsed = time.time() - start_time_total
+# print(f"\nM Sweep completed in {total_elapsed:.1f}s")
 
 # fig = plot_sweep(M_vals, sumrate_kmeans_ref_arr, sumrate_kmeans_opt_arr, 
 #                  sumrate_hier_ref_arr, sumrate_hier_opt_arr, 
 #                  'Number of Users (M)', 
 #                  'Variation of the Sum Rate Relative to the Number of Users')
 # plt.savefig('m_sweep_results.png', dpi=300, bbox_inches='tight')
+# print("Saved plot: m_sweep_results.png")
 
 # # ========================================================================
 # # BW Sweep (Bandwidth)
@@ -209,40 +255,75 @@ trials_hier_opt = np.zeros(TRIALS)
 # sumrate_hier_ref_arr = np.zeros(len(BW_vals))
 # sumrate_hier_opt_arr = np.zeros(len(BW_vals))
 
+# start_time_total = time.time()
+
 # for i, bw in enumerate(BW_vals):
 #     print(f"\nBW = {bw/1e6:.1f} MHz ({i+1}/{len(BW_vals)})")
+#     start_time = time.time()
     
-#     for j in range(TRIALS):
-#         if (j + 1) % 10 == 0:
-#             print(f"  Trial {j+1}/{TRIALS}...", end='\r')
-        
-#         user_pos = user_pos_trials[j]
-        
-#         # K-means
-#         uav_pos_kmeans, _, sumrate = k_means_uav(user_pos, M, N, AREA, H_M, H, F, P_T, P_N, MAX_ITER, TOL, bw, device=device)
-#         trials_kmeans_ref[j] = sumrate.cpu().item() if isinstance(sumrate, torch.Tensor) else sumrate
-        
-#         uav_pos_opt_kmeans, _, _, sumrate = optimize_network(M, N, uav_pos_kmeans, bw, AREA, user_pos, H_M, H, F, P_T, P_N, R_MIN, device=device)
-#         trials_kmeans_opt[j] = sumrate
-        
-#         # Hierarchical
-#         uav_pos_hier, _, sumrate = hierarchical_uav(user_pos, N, H_M, H, F, P_T, P_N, bw, device=device)
-#         trials_hier_ref[j] = sumrate.cpu().item() if isinstance(sumrate, torch.Tensor) else sumrate
-        
-#         uav_pos_opt_hier, _, _, sumrate = optimize_network(M, N, uav_pos_hier, bw, AREA, user_pos, H_M, H, F, P_T, P_N, R_MIN, device=device)
-#         trials_hier_opt[j] = sumrate
+#     # Run K-means trials in parallel
+#     kmeans_baseline, kmeans_optimized = batch_optimize_trials(
+#         user_pos_trials=user_pos_trials,
+#         M=M,
+#         N=N,
+#         AREA=AREA,
+#         H_M=H_M,
+#         H=H,
+#         F=F,
+#         P_T=P_T,
+#         P_N=P_N,
+#         MAX_ITER=MAX_ITER,
+#         TOL=TOL,
+#         BW_total=bw,
+#         R_MIN=R_MIN,
+#         D_m=D_m,
+#         C_m=C_m,
+#         f_UAV=f_UAV,
+#         f_user=f_user,
+#         device=device,
+#         num_workers=2,
+#         clustering_method='kmeans'
+#     )
     
-#     sumrate_kmeans_ref_arr[i] = np.mean(trials_kmeans_ref)
-#     sumrate_kmeans_opt_arr[i] = np.mean(trials_kmeans_opt)
-#     sumrate_hier_ref_arr[i] = np.mean(trials_hier_ref)
-#     sumrate_hier_opt_arr[i] = np.mean(trials_hier_opt)
+#     # Run hierarchical trials in parallel
+#     hier_baseline, hier_optimized = batch_optimize_trials(
+#         user_pos_trials=user_pos_trials,
+#         M=M,
+#         N=N,
+#         AREA=AREA,
+#         H_M=H_M,
+#         H=H,
+#         F=F,
+#         P_T=P_T,
+#         P_N=P_N,
+#         MAX_ITER=MAX_ITER,
+#         TOL=TOL,
+#         BW_total=bw,
+#         R_MIN=R_MIN,
+#         D_m=D_m,
+#         C_m=C_m,
+#         f_UAV=f_UAV,
+#         f_user=f_user,
+#         device=device,
+#         num_workers=2,
+#         clustering_method='hierarchical'
+#     )
     
-#     print(f"  BW={bw/1e6:.1f}MHz - K-means Opt: {sumrate_kmeans_opt_arr[i]:.2f} Mbps, Hier Opt: {sumrate_hier_opt_arr[i]:.2f} Mbps")
+#     # Extract results
+#     sumrate_kmeans_ref_arr[i] = np.mean(kmeans_baseline)
+#     sumrate_kmeans_opt_arr[i] = np.mean(kmeans_optimized)
+#     sumrate_hier_ref_arr[i] = np.mean(hier_baseline)
+#     sumrate_hier_opt_arr[i] = np.mean(hier_optimized)
     
-#     trials_kmeans_ref = np.zeros(TRIALS)
-#     trials_kmeans_opt = np.zeros(TRIALS)
-#     trials_hier_ref = np.zeros(TRIALS)
-#     trials_hier_opt = np.zeros(TRIALS)
+#     elapsed = time.time() - start_time
+#     print(f"  BW={bw/1e6:.1f}MHz completed in {elapsed:.1f}s")
+#     print(f"    K-means Ref: {sumrate_kmeans_ref_arr[i]:.2f} Mbps")
+#     print(f"    K-means Opt: {sumrate_kmeans_opt_arr[i]:.2f} Mbps")
+#     print(f"    Hier Ref: {sumrate_hier_ref_arr[i]:.2f} Mbps")
+#     print(f"    Hier Opt: {sumrate_hier_opt_arr[i]:.2f} Mbps")
+
+# total_elapsed = time.time() - start_time_total
+# print(f"\nBW Sweep completed in {total_elapsed:.1f}s")
 
 # fig = plot_sweep(BW_vals/1e6, sumrate_kmeans_ref_arr, sumrate_kmeans_opt_arr, 
 #                  sumrate_hier_ref_arr, sumrate_hier_opt_arr, 
@@ -263,40 +344,75 @@ trials_hier_opt = np.zeros(TRIALS)
 # sumrate_hier_ref_arr = np.zeros(len(P_t_vals))
 # sumrate_hier_opt_arr = np.zeros(len(P_t_vals))
 
+# start_time_total = time.time()
+
 # for i, p_t in enumerate(P_t_vals):
 #     print(f"\nP_T = {p_t} dBm ({i+1}/{len(P_t_vals)})")
+#     start_time = time.time()
     
-#     for j in range(TRIALS):
-#         if (j + 1) % 10 == 0:
-#             print(f"  Trial {j+1}/{TRIALS}...", end='\r')
-        
-#         user_pos = user_pos_trials[j]
-        
-#         # K-means
-#         uav_pos_kmeans, _, sumrate = k_means_uav(user_pos, M, N, AREA, H_M, H, F, p_t, P_N, MAX_ITER, TOL, BW_total, device=device)
-#         trials_kmeans_ref[j] = sumrate.cpu().item() if isinstance(sumrate, torch.Tensor) else sumrate
-        
-#         uav_pos_opt_kmeans, _, _, sumrate = optimize_network(M, N, uav_pos_kmeans, BW_total, AREA, user_pos, H_M, H, F, p_t, P_N, R_MIN, device=device)
-#         trials_kmeans_opt[j] = sumrate
-        
-#         # Hierarchical
-#         uav_pos_hier, _, sumrate = hierarchical_uav(user_pos, N, H_M, H, F, p_t, P_N, BW_total, device=device)
-#         trials_hier_ref[j] = sumrate.cpu().item() if isinstance(sumrate, torch.Tensor) else sumrate
-        
-#         uav_pos_opt_hier, _, _, sumrate = optimize_network(M, N, uav_pos_hier, BW_total, AREA, user_pos, H_M, H, F, p_t, P_N, R_MIN, device=device)
-#         trials_hier_opt[j] = sumrate
+#     # Run K-means trials in parallel
+#     kmeans_baseline, kmeans_optimized = batch_optimize_trials(
+#         user_pos_trials=user_pos_trials,
+#         M=M,
+#         N=N,
+#         AREA=AREA,
+#         H_M=H_M,
+#         H=H,
+#         F=F,
+#         P_T=p_t,
+#         P_N=P_N,
+#         MAX_ITER=MAX_ITER,
+#         TOL=TOL,
+#         BW_total=BW_total,
+#         R_MIN=R_MIN,
+#         D_m=D_m,
+#         C_m=C_m,
+#         f_UAV=f_UAV,
+#         f_user=f_user,
+#         device=device,
+#         num_workers=2,
+#         clustering_method='kmeans'
+#     )
     
-#     sumrate_kmeans_ref_arr[i] = np.mean(trials_kmeans_ref)
-#     sumrate_kmeans_opt_arr[i] = np.mean(trials_kmeans_opt)
-#     sumrate_hier_ref_arr[i] = np.mean(trials_hier_ref)
-#     sumrate_hier_opt_arr[i] = np.mean(trials_hier_opt)
+#     # Run hierarchical trials in parallel
+#     hier_baseline, hier_optimized = batch_optimize_trials(
+#         user_pos_trials=user_pos_trials,
+#         M=M,
+#         N=N,
+#         AREA=AREA,
+#         H_M=H_M,
+#         H=H,
+#         F=F,
+#         P_T=p_t,
+#         P_N=P_N,
+#         MAX_ITER=MAX_ITER,
+#         TOL=TOL,
+#         BW_total=BW_total,
+#         R_MIN=R_MIN,
+#         D_m=D_m,
+#         C_m=C_m,
+#         f_UAV=f_UAV,
+#         f_user=f_user,
+#         device=device,
+#         num_workers=2,
+#         clustering_method='hierarchical'
+#     )
     
-#     print(f"  P_T={p_t}dBm - K-means Opt: {sumrate_kmeans_opt_arr[i]:.2f} Mbps, Hier Opt: {sumrate_hier_opt_arr[i]:.2f} Mbps")
+#     # Extract results
+#     sumrate_kmeans_ref_arr[i] = np.mean(kmeans_baseline)
+#     sumrate_kmeans_opt_arr[i] = np.mean(kmeans_optimized)
+#     sumrate_hier_ref_arr[i] = np.mean(hier_baseline)
+#     sumrate_hier_opt_arr[i] = np.mean(hier_optimized)
     
-#     trials_kmeans_ref = np.zeros(TRIALS)
-#     trials_kmeans_opt = np.zeros(TRIALS)
-#     trials_hier_ref = np.zeros(TRIALS)
-#     trials_hier_opt = np.zeros(TRIALS)
+#     elapsed = time.time() - start_time
+#     print(f"  P_T={p_t}dBm completed in {elapsed:.1f}s")
+#     print(f"    K-means Ref: {sumrate_kmeans_ref_arr[i]:.2f} Mbps")
+#     print(f"    K-means Opt: {sumrate_kmeans_opt_arr[i]:.2f} Mbps")
+#     print(f"    Hier Ref: {sumrate_hier_ref_arr[i]:.2f} Mbps")
+#     print(f"    Hier Opt: {sumrate_hier_opt_arr[i]:.2f} Mbps")
+
+# total_elapsed = time.time() - start_time_total
+# print(f"\nP_T Sweep completed in {total_elapsed:.1f}s")
 
 # fig = plot_sweep(P_t_vals, sumrate_kmeans_ref_arr, sumrate_kmeans_opt_arr, 
 #                  sumrate_hier_ref_arr, sumrate_hier_opt_arr, 
@@ -317,40 +433,75 @@ trials_hier_opt = np.zeros(TRIALS)
 # sumrate_hier_ref_arr = np.zeros(len(Rmin_vals))
 # sumrate_hier_opt_arr = np.zeros(len(Rmin_vals))
 
+# start_time_total = time.time()
+
 # for i, rmin in enumerate(Rmin_vals):
 #     print(f"\nR_MIN = {rmin/1e3:.1f} kbps ({i+1}/{len(Rmin_vals)})")
+#     start_time = time.time()
     
-#     for j in range(TRIALS):
-#         if (j + 1) % 10 == 0:
-#             print(f"  Trial {j+1}/{TRIALS}...", end='\r')
-        
-#         user_pos = user_pos_trials[j]
-        
-#         # K-means
-#         uav_pos_kmeans, _, sumrate = k_means_uav(user_pos, M, N, AREA, H_M, H, F, P_T, P_N, MAX_ITER, TOL, BW_total, device=device)
-#         trials_kmeans_ref[j] = sumrate.cpu().item() if isinstance(sumrate, torch.Tensor) else sumrate
-        
-#         uav_pos_opt_kmeans, _, _, sumrate = optimize_network(M, N, uav_pos_kmeans, BW_total, AREA, user_pos, H_M, H, F, P_T, P_N, rmin, device=device)
-#         trials_kmeans_opt[j] = sumrate
-        
-#         # Hierarchical
-#         uav_pos_hier, _, sumrate = hierarchical_uav(user_pos, N, H_M, H, F, P_T, P_N, BW_total, device=device)
-#         trials_hier_ref[j] = sumrate.cpu().item() if isinstance(sumrate, torch.Tensor) else sumrate
-        
-#         uav_pos_opt_hier, _, _, sumrate = optimize_network(M, N, uav_pos_hier, BW_total, AREA, user_pos, H_M, H, F, P_T, P_N, rmin, device=device)
-#         trials_hier_opt[j] = sumrate
+#     # Run K-means trials in parallel
+#     kmeans_baseline, kmeans_optimized = batch_optimize_trials(
+#         user_pos_trials=user_pos_trials,
+#         M=M,
+#         N=N,
+#         AREA=AREA,
+#         H_M=H_M,
+#         H=H,
+#         F=F,
+#         P_T=P_T,
+#         P_N=P_N,
+#         MAX_ITER=MAX_ITER,
+#         TOL=TOL,
+#         BW_total=BW_total,
+#         R_MIN=rmin,
+#         D_m=D_m,
+#         C_m=C_m,
+#         f_UAV=f_UAV,
+#         f_user=f_user,
+#         device=device,
+#         num_workers=2,
+#         clustering_method='kmeans'
+#     )
     
-#     sumrate_kmeans_ref_arr[i] = np.mean(trials_kmeans_ref)
-#     sumrate_kmeans_opt_arr[i] = np.mean(trials_kmeans_opt)
-#     sumrate_hier_ref_arr[i] = np.mean(trials_hier_ref)
-#     sumrate_hier_opt_arr[i] = np.mean(trials_hier_opt)
+#     # Run hierarchical trials in parallel
+#     hier_baseline, hier_optimized = batch_optimize_trials(
+#         user_pos_trials=user_pos_trials,
+#         M=M,
+#         N=N,
+#         AREA=AREA,
+#         H_M=H_M,
+#         H=H,
+#         F=F,
+#         P_T=P_T,
+#         P_N=P_N,
+#         MAX_ITER=MAX_ITER,
+#         TOL=TOL,
+#         BW_total=BW_total,
+#         R_MIN=rmin,
+#         D_m=D_m,
+#         C_m=C_m,
+#         f_UAV=f_UAV,
+#         f_user=f_user,
+#         device=device,
+#         num_workers=2,
+#         clustering_method='hierarchical'
+#     )
     
-#     print(f"  R_MIN={rmin/1e3:.1f}kbps - K-means Opt: {sumrate_kmeans_opt_arr[i]:.2f} Mbps, Hier Opt: {sumrate_hier_opt_arr[i]:.2f} Mbps")
+#     # Extract results
+#     sumrate_kmeans_ref_arr[i] = np.mean(kmeans_baseline)
+#     sumrate_kmeans_opt_arr[i] = np.mean(kmeans_optimized)
+#     sumrate_hier_ref_arr[i] = np.mean(hier_baseline)
+#     sumrate_hier_opt_arr[i] = np.mean(hier_optimized)
     
-#     trials_kmeans_ref = np.zeros(TRIALS)
-#     trials_kmeans_opt = np.zeros(TRIALS)
-#     trials_hier_ref = np.zeros(TRIALS)
-#     trials_hier_opt = np.zeros(TRIALS)
+#     elapsed = time.time() - start_time
+#     print(f"  R_MIN={rmin/1e3:.1f}kbps completed in {elapsed:.1f}s")
+#     print(f"    K-means Ref: {sumrate_kmeans_ref_arr[i]:.2f} Mbps")
+#     print(f"    K-means Opt: {sumrate_kmeans_opt_arr[i]:.2f} Mbps")
+#     print(f"    Hier Ref: {sumrate_hier_ref_arr[i]:.2f} Mbps")
+#     print(f"    Hier Opt: {sumrate_hier_opt_arr[i]:.2f} Mbps")
+
+# total_elapsed = time.time() - start_time_total
+# print(f"\nR_MIN Sweep completed in {total_elapsed:.1f}s")
 
 # fig = plot_sweep(Rmin_vals/1e3, sumrate_kmeans_ref_arr, sumrate_kmeans_opt_arr, 
 #                  sumrate_hier_ref_arr, sumrate_hier_opt_arr, 
@@ -371,8 +522,11 @@ trials_hier_opt = np.zeros(TRIALS)
 # sumrate_hier_ref_arr = np.zeros(len(Area_vals))
 # sumrate_hier_opt_arr = np.zeros(len(Area_vals))
 
+# start_time_total = time.time()
+
 # for i, area in enumerate(Area_vals):
 #     print(f"\nArea = {area/1e6:.1f} km² ({i+1}/{len(Area_vals)})")
+#     start_time = time.time()
 #     side_area = np.sqrt(area)
     
 #     # Generate new user positions for this area
@@ -383,43 +537,76 @@ trials_hier_opt = np.zeros(TRIALS)
 #         user_pos = side_area * torch.rand(2, M, device=device)
 #         user_pos_trials_area.append(user_pos)
     
-#     for j in range(TRIALS):
-#         if (j + 1) % 10 == 0:
-#             print(f"  Trial {j+1}/{TRIALS}...", end='\r')
-        
-#         user_pos = user_pos_trials_area[j]
-        
-#         # K-means
-#         uav_pos_kmeans, _, sumrate = k_means_uav(user_pos, M, N, area, H_M, H, F, P_T, P_N, MAX_ITER, TOL, BW_total, device=device)
-#         trials_kmeans_ref[j] = sumrate.cpu().item() if isinstance(sumrate, torch.Tensor) else sumrate
-        
-#         uav_pos_opt_kmeans, _, _, sumrate = optimize_network(M, N, uav_pos_kmeans, BW_total, area, user_pos, H_M, H, F, P_T, P_N, R_MIN, device=device)
-#         trials_kmeans_opt[j] = sumrate
-        
-#         # Hierarchical
-#         uav_pos_hier, _, sumrate = hierarchical_uav(user_pos, N, H_M, H, F, P_T, P_N, BW_total, device=device)
-#         trials_hier_ref[j] = sumrate.cpu().item() if isinstance(sumrate, torch.Tensor) else sumrate
-        
-#         uav_pos_opt_hier, _, _, sumrate = optimize_network(M, N, uav_pos_hier, BW_total, area, user_pos, H_M, H, F, P_T, P_N, R_MIN, device=device)
-#         trials_hier_opt[j] = sumrate
+#     # Run K-means trials in parallel
+#     kmeans_baseline, kmeans_optimized = batch_optimize_trials(
+#         user_pos_trials=user_pos_trials_area,
+#         M=M,
+#         N=N,
+#         AREA=area,
+#         H_M=H_M,
+#         H=H,
+#         F=F,
+#         P_T=P_T,
+#         P_N=P_N,
+#         MAX_ITER=MAX_ITER,
+#         TOL=TOL,
+#         BW_total=BW_total,
+#         R_MIN=R_MIN,
+#         D_m=D_m,
+#         C_m=C_m,
+#         f_UAV=f_UAV,
+#         f_user=f_user,
+#         device=device,
+#         num_workers=2,
+#         clustering_method='kmeans'
+#     )
     
-#     sumrate_kmeans_ref_arr[i] = np.mean(trials_kmeans_ref)
-#     sumrate_kmeans_opt_arr[i] = np.mean(trials_kmeans_opt)
-#     sumrate_hier_ref_arr[i] = np.mean(trials_hier_ref)
-#     sumrate_hier_opt_arr[i] = np.mean(trials_hier_opt)
+#     # Run hierarchical trials in parallel
+#     hier_baseline, hier_optimized = batch_optimize_trials(
+#         user_pos_trials=user_pos_trials_area,
+#         M=M,
+#         N=N,
+#         AREA=area,
+#         H_M=H_M,
+#         H=H,
+#         F=F,
+#         P_T=P_T,
+#         P_N=P_N,
+#         MAX_ITER=MAX_ITER,
+#         TOL=TOL,
+#         BW_total=BW_total,
+#         R_MIN=R_MIN,
+#         D_m=D_m,
+#         C_m=C_m,
+#         f_UAV=f_UAV,
+#         f_user=f_user,
+#         device=device,
+#         num_workers=2,
+#         clustering_method='hierarchical'
+#     )
     
-#     print(f"  Area={area/1e6:.1f}km² - K-means Opt: {sumrate_kmeans_opt_arr[i]:.2f} Mbps, Hier Opt: {sumrate_hier_opt_arr[i]:.2f} Mbps")
+#     # Extract results
+#     sumrate_kmeans_ref_arr[i] = np.mean(kmeans_baseline)
+#     sumrate_kmeans_opt_arr[i] = np.mean(kmeans_optimized)
+#     sumrate_hier_ref_arr[i] = np.mean(hier_baseline)
+#     sumrate_hier_opt_arr[i] = np.mean(hier_optimized)
     
-#     trials_kmeans_ref = np.zeros(TRIALS)
-#     trials_kmeans_opt = np.zeros(TRIALS)
-#     trials_hier_ref = np.zeros(TRIALS)
-#     trials_hier_opt = np.zeros(TRIALS)
+#     elapsed = time.time() - start_time
+#     print(f"  Area={area/1e6:.1f}km² completed in {elapsed:.1f}s")
+#     print(f"    K-means Ref: {sumrate_kmeans_ref_arr[i]:.2f} Mbps")
+#     print(f"    K-means Opt: {sumrate_kmeans_opt_arr[i]:.2f} Mbps")
+#     print(f"    Hier Ref: {sumrate_hier_ref_arr[i]:.2f} Mbps")
+#     print(f"    Hier Opt: {sumrate_hier_opt_arr[i]:.2f} Mbps")
+
+# total_elapsed = time.time() - start_time_total
+# print(f"\nArea Sweep completed in {total_elapsed:.1f}s")
 
 # fig = plot_sweep(Area_vals/1e6, sumrate_kmeans_ref_arr, sumrate_kmeans_opt_arr, 
 #                  sumrate_hier_ref_arr, sumrate_hier_opt_arr, 
 #                  'Area (km²)', 
 #                  'Variation of the Sum Rate Relative to the Area')
 # plt.savefig('area_sweep_results.png', dpi=300, bbox_inches='tight')
+# print("Saved plot: area_sweep_results.png")
 
 # Do not change below this line
 # =================================================================

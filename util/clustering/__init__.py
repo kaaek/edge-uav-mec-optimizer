@@ -1,15 +1,11 @@
 """
 Clustering algorithms for UAV positioning
 Author: Khalil El Kaaki & Joe Abi Samra
-Date: 23/10/2025
-Translated to Python with GPU support using PyTorch
 """
-
 import torch
 import numpy as np
 from scipy.cluster.hierarchy import linkage, fcluster
-from ..common import p_received, association, bitrate
-
+from ..common import p_received, association, bitrate, se, compute_mec_throughput, init_bandwidth
 
 def k_means(user_pos, N, AREA, MAX_ITER, TOL, device='cuda'):
     """
@@ -38,8 +34,7 @@ def k_means(user_pos, N, AREA, MAX_ITER, TOL, device='cuda'):
     
     side = AREA ** 0.5
     
-    # Initialize centroids randomly
-    centroids = side * torch.rand(2, N, device=device)
+    centroids = side * torch.rand(2, N, device=device) # Initialize centroids randomly
     
     for iter in range(MAX_ITER):
         prev_centroids = centroids.clone()
@@ -49,8 +44,7 @@ def k_means(user_pos, N, AREA, MAX_ITER, TOL, device='cuda'):
         dy = user_pos[1, :].unsqueeze(1) - centroids[1, :].unsqueeze(0)  # (M, N)
         distance = torch.sqrt(dx**2 + dy**2)  # (M, N)
         
-        # Assign each user to closest UAV
-        assoc = torch.argmin(distance, dim=1)  # (M,)
+        assoc = torch.argmin(distance, dim=1)  # (M,) # Assign each user to closest UAV
         
         # Update centroids based on new association
         for n in range(N):
@@ -58,19 +52,17 @@ def k_means(user_pos, N, AREA, MAX_ITER, TOL, device='cuda'):
             if connected_users.any():
                 centroids[:, n] = torch.mean(user_pos[:, connected_users], dim=1)
             else:
-                # Reinitialize if no users assigned
-                centroids[:, n] = side * torch.rand(2, device=device)
+                centroids[:, n] = side * torch.rand(2, device=device) # Reinitialize if no users assigned
         
-        # Check convergence
-        if torch.max(torch.sqrt(torch.sum((centroids - prev_centroids)**2, dim=0))) < TOL:
+        if torch.max(torch.sqrt(torch.sum((centroids - prev_centroids)**2, dim=0))) < TOL: # Check convergence to avoid redundant iterations
             break
     
     return centroids
 
 
-def k_means_uav(user_pos, M, N, AREA, H_M, H, F, P_T, P_N, MAX_ITER, TOL, BW, device='cuda'):
+def k_means_uav(user_pos, M, N, AREA, H_M, H, F, P_T, P_N, MAX_ITER, TOL, BW, D_m, C_m, f_UAV, f_user, device='cuda'):
     """
-    K-means based UAV positioning with rate calculation.
+    K-means based UAV positioning with MEC throughput calculation.
     
     Args:
         user_pos: Tensor/array of shape (2, M) - user positions
@@ -85,11 +77,15 @@ def k_means_uav(user_pos, M, N, AREA, H_M, H, F, P_T, P_N, MAX_ITER, TOL, BW, de
         MAX_ITER: Maximum iterations for k-means
         TOL: Convergence tolerance
         BW: Total bandwidth
+        D_m: Task data size (bits)
+        C_m: Computational complexity (CPU cycles)
+        f_UAV: UAV CPU frequency (Hz)
+        f_user: User CPU frequency (Hz)
         device: 'cuda' or 'cpu'
     
     Returns:
         uav_pos: Tensor (2, N) - UAV positions
-        rate: Tensor (M,) - per-user rates
+        throughput: Tensor (M,) - per-user MEC throughputs
         sumlink_mbps: Scalar - total throughput in Mbps
     """
     # Run k-means clustering
@@ -101,25 +97,32 @@ def k_means_uav(user_pos, M, N, AREA, H_M, H, F, P_T, P_N, MAX_ITER, TOL, BW, de
     else:
         user_pos = user_pos.to(device)
     
-    # Calculate received power
+    # Calculate received power and association
     p_r = p_received(user_pos, uav_pos, H_M, H, F, P_T, device=device)
-    
-    # Get association matrix
     a = association(p_r)
     
-    # Calculate per-user rates
-    rate = torch.sum(bitrate(p_r, P_N, BW/M, a), dim=1)  # (M,)
+    bw_per_user = BW / M # Initialize bandwidth allocation (uniform)
+    b_m = torch.ones(M, device=device) * bw_per_user
     
-    # Total sum rate
-    sumlink = torch.sum(rate)
+    # Calculate spectral efficiency and wireless rates
+    SE = se(p_r, P_N, a)  # (M, N)
+    SE_selected = torch.sum(SE * a, dim=1)  # (M,) - SE for associated UAV
+    R_m = b_m * SE_selected  # (M,) - wireless data rate in bps
+    
+    # Compute MEC throughput (assume full offloading for baseline)
+    o_m = torch.ones(M, device=device)  # Full offloading
+    throughput = compute_mec_throughput(R_m, o_m, D_m, C_m, f_UAV, f_user, device=device)
+    
+    # Total sum throughput
+    sumlink = torch.sum(throughput)
     sumlink_mbps = sumlink / 1e6
     
-    return uav_pos, rate, sumlink_mbps
+    return uav_pos, throughput, sumlink_mbps
 
 
-def hierarchical_uav(user_pos, N, H_M, H, F, P_T, P_N, BW, device='cuda'):
+def hierarchical_uav(user_pos, N, H_M, H, F, P_T, P_N, BW, D_m, C_m, f_UAV, f_user, device='cuda'):
     """
-    Hierarchical clustering for UAV positioning.
+    Hierarchical clustering for UAV positioning with MEC throughput calculation.
     
     Args:
         user_pos: Tensor/array of shape (2, M) - user positions
@@ -130,19 +133,22 @@ def hierarchical_uav(user_pos, N, H_M, H, F, P_T, P_N, BW, device='cuda'):
         P_T: Transmit power
         P_N: Noise power
         BW: Total bandwidth
+        D_m: Task data size (bits)
+        C_m: Computational complexity (CPU cycles)
+        f_UAV: UAV CPU frequency (Hz)
+        f_user: User CPU frequency (Hz)
         device: 'cuda' or 'cpu'
     
     Returns:
         uav_pos_hier: Tensor (2, N) - UAV positions
-        baseline_br: Tensor (M,) - per-user rates
+        throughput: Tensor (M,) - per-user MEC throughputs
         sumrate_mbps: Scalar - total throughput in Mbps
     """
-    # Convert to numpy for scipy hierarchical clustering
+    # Convert to numpy for scipy built-in hierarchical clustering
     if isinstance(user_pos, torch.Tensor):
         user_pos_np = user_pos.cpu().numpy()
     else:
         user_pos_np = np.array(user_pos)
-    
     M = user_pos_np.shape[1]
     
     # Hierarchical clustering using scipy (on CPU)
@@ -169,12 +175,24 @@ def hierarchical_uav(user_pos, N, H_M, H, F, P_T, P_N, BW, device='cuda'):
     uav_pos_hier = torch.tensor(uav_pos_hier, dtype=torch.float32, device=device)
     user_pos_torch = torch.tensor(user_pos_np, dtype=torch.float32, device=device)
     
-    # Calculate rates
+    # Calculate received power and association
     p_r = p_received(user_pos_torch, uav_pos_hier, H_M, H, F, P_T, device=device)
     a = association(p_r)
-    baseline_br = torch.sum(bitrate(p_r, P_N, BW/M, a), dim=1)  # (M,)
     
-    sumlink = torch.sum(baseline_br)
+    # Initialize bandwidth allocation (uniform)
+    bw_per_user = BW / M
+    b_m = torch.ones(M, device=device) * bw_per_user
+    
+    # Calculate spectral efficiency and wireless rates
+    SE = se(p_r, P_N, a)  # (M, N)
+    SE_selected = torch.sum(SE * a, dim=1)  # (M,) - SE for associated UAV
+    R_m = b_m * SE_selected  # (M,) - wireless data rate in bps
+    
+    # Compute MEC throughput (assume full offloading for baseline)
+    o_m = torch.ones(M, device=device)  # Full offloading
+    throughput = compute_mec_throughput(R_m, o_m, D_m, C_m, f_UAV, f_user, device=device)
+    
+    sumlink = torch.sum(throughput)
     sumrate_mbps = sumlink / 1e6
     
-    return uav_pos_hier, baseline_br, sumrate_mbps
+    return uav_pos_hier, throughput, sumrate_mbps

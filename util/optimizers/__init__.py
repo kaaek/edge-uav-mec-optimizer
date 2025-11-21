@@ -195,25 +195,32 @@ from .helpers import nonlcon, nonlcon_joint, rate_fn, bitrate_safe
 #     return B_opt, br_opt.cpu().numpy(), sum_br_opt_mbps
 
 
-def optimize_network(M, N, INITIAL_UAV_POS, BW_total, AREA, user_pos, H_M, H, F, P_T, P_N, Rmin, device='cuda'):
+def optimize_network(M, N, INITIAL_UAV_POS, BW_total, AREA, user_pos, H_M, H, F, P_T, P_N, Rmin, D_m, C_m, f_UAV, f_user, device='cuda'):
     """
-    Joint optimization of UAV positions and bandwidth allocation.
+    MEC-aware joint optimization of UAV positions, bandwidth allocation, and offloading decisions.
+    
+    Decision vector layout: x = [uav_pos_flat (2*N), b_m (M), o_m (M)]
     
     Args:
         M: Number of users
         N: Number of UAVs
         INITIAL_UAV_POS: Initial UAV positions (2, N)
-        BW_total: Total bandwidth
+        BW_total: Total bandwidth (Hz)
         AREA: Coverage area
         user_pos: User positions (2, M)
         H_M, H, F, P_T, P_N: Physical parameters
-        Rmin: Minimum rate requirement
+        Rmin: Minimum throughput requirement (bps)
+        D_m: Task data size (bits)
+        C_m: Computational complexity (CPU cycles)
+        f_UAV: UAV CPU frequency (Hz)
+        f_user: User CPU frequency (Hz)
         device: 'cuda' or 'cpu'
     
     Returns:
         uav_pos_opt: Optimized UAV positions (2, N)
-        Bandwidth_opt: Optimized bandwidth allocation (M,)
-        Rate_opt: Resulting rates (M,)
+        Bandwidth_opt: Optimized bandwidth allocation (M,) in Hz
+        Offload_opt: Optimized offloading fractions (M,)
+        Throughput_opt: Resulting MEC throughputs (M,) in bps
         sumrate_mbps: Total throughput in Mbps
     """
     # Convert to tensors
@@ -229,39 +236,67 @@ def optimize_network(M, N, INITIAL_UAV_POS, BW_total, AREA, user_pos, H_M, H, F,
     
     SIDE = np.ceil(np.sqrt(AREA))
     
-    # Normalize UAV positions
+    # Normalize UAV positions (first 2*N entries of decision vector)
     UAV_POS_FLAT_norm = (INITIAL_UAV_POS / SIDE).reshape(-1).cpu().numpy()
     
-    # Initialize bandwidth allocation
+    # Initialize bandwidth allocation (next M entries, in Hz)
     p_r = p_received(user_pos, INITIAL_UAV_POS, H_M, H, F, P_T, device=device)
-    bw_req_user, _ = init_bandwidth(user_pos, INITIAL_UAV_POS, association(p_r), 
-                                     Rmin, BW_total, H_M, H, F, P_T, P_N, device=device)
+    A = association(p_r)
+    bw_req_user, feasible = init_bandwidth(user_pos, INITIAL_UAV_POS, A, 
+                                            Rmin, BW_total, H_M, H, F, P_T, P_N, device=device)
     
     bw_req_user_np = bw_req_user.cpu().numpy()
     bw_req_user_np[~np.isfinite(bw_req_user_np) | (bw_req_user_np < 0)] = 0
     
-    if np.sum(bw_req_user_np) == 0:
-        b_norm_init = np.ones(M) / M
-    else:
-        b_norm_init = bw_req_user_np / np.sum(bw_req_user_np)
+    # Scale bandwidth to use most of the budget
+    # Start with uniform allocation, then let optimizer refine
+    b_init = np.ones(M) * (BW_total / M)  # Uniform allocation
     
-    # Decision vector: [UAV positions (normalized), bandwidth (normalized)]
-    decision_vector = np.concatenate([UAV_POS_FLAT_norm, b_norm_init])
+    # Initialize offloading fractions (last M entries, in [0,1])
+    # Greedy heuristic: compute expected time for offload vs local
+    # For simplicity, compute the ratio and use sigmoid to bound to [0,1]
+    # If T_local > T_offload_expected, prefer offloading
+    # Start with 1.0 (full offload) to let optimizer decide
+    o_init = np.ones(M) * 1.0  # Start with full offloading
+    
+    # Decision vector: [UAV positions (normalized), bandwidth (Hz), offloading fractions]
+    decision_vector = np.concatenate([UAV_POS_FLAT_norm, b_init, o_init])
     
     # Bounds
-    LOWER_BOUND = np.zeros(2*N + M)
-    UPPER_BOUND = np.ones(2*N + M)
+    # UAV positions: normalized to [0, 1]
+    # Bandwidth: [0, BW_total] Hz
+    # Offloading: [0, 1]
+    LOWER_BOUND = np.concatenate([
+        np.zeros(2*N),        # UAV positions
+        np.zeros(M),          # Bandwidth
+        np.zeros(M)           # Offloading
+    ])
+    UPPER_BOUND = np.concatenate([
+        np.ones(2*N),         # UAV positions (normalized)
+        np.ones(M) * BW_total,  # Bandwidth
+        np.ones(M)            # Offloading
+    ])
     
-    # Objective function
+    # Sanity check
+    assert len(decision_vector) == len(LOWER_BOUND) == len(UPPER_BOUND), \
+        f"Decision vector size mismatch: {len(decision_vector)} vs {len(LOWER_BOUND)}"
+    assert len(decision_vector) == 2*N + 2*M, \
+        f"Expected {2*N + 2*M} decision variables, got {len(decision_vector)}"
+    
+    # Objective function: maximize sum(log(Th_m)) => minimize -sum(log(Th_m))
     def objective(x):
-        """Negative log-sum for proportional fairness"""
-        R = rate_fn(x, N, SIDE, BW_total, user_pos, H_M, H, F, P_T, P_N, device=device)
-        obj = -torch.sum(torch.log(torch.maximum(R, torch.tensor(1e-9, device=device))))
+        """Negative log-sum of MEC throughputs for proportional fairness"""
+        Th_m = rate_fn(x, N, SIDE, BW_total, user_pos, H_M, H, F, P_T, P_N, 
+                       D_m, C_m, f_UAV, f_user, device=device)
+        # Clamp to avoid log(0)
+        Th_m_safe = torch.maximum(Th_m, torch.tensor(1e-9, device=device))
+        obj = -torch.sum(torch.log(Th_m_safe))
         return obj.cpu().detach().numpy()
     
     # Constraint function
     def constraint_func(x):
-        c, _ = nonlcon_joint(x, N, M, user_pos, H_M, H, F, P_T, P_N, BW_total, Rmin, SIDE, device=device)
+        c, _ = nonlcon_joint(x, N, M, user_pos, H_M, H, F, P_T, P_N, BW_total, Rmin, SIDE,
+                            D_m, C_m, f_UAV, f_user, device=device)
         return c
     
     # Optimize
@@ -269,19 +304,64 @@ def optimize_network(M, N, INITIAL_UAV_POS, BW_total, AREA, user_pos, H_M, H, F,
     bounds = Bounds(LOWER_BOUND, UPPER_BOUND)
     nlc = NonlinearConstraint(constraint_func, -np.inf, 0)
     
-    options = {'maxiter': 20, 'ftol': 1e-6, 'disp': True}
+    # Early stopping: track convergence
+    prev_obj = [np.inf]
+    iter_count = [0]
+    
+    def callback(xk):
+        """Early stopping if objective stops improving"""
+        iter_count[0] += 1
+        current_obj = objective(xk)
+        
+        # Compute relative improvement
+        if np.isfinite(prev_obj[0]) and abs(prev_obj[0]) > 1e-9:
+            improvement = abs(prev_obj[0] - current_obj) / abs(prev_obj[0])
+        else:
+            improvement = 1.0  # First iteration or invalid, continue
+        
+        prev_obj[0] = current_obj
+        
+        # Stop if improvement < 0.01% for numerical efficiency
+        if improvement < 1e-4 and iter_count[0] > 3:
+            return True  # Stop optimization
+        return False
+    
+    # Relaxed tolerance for faster convergence, disable verbose output
+    options = {'maxiter': 50, 'ftol': 1e-4, 'disp': False}
     
     result = minimize(objective, decision_vector, method='SLSQP',
-                     bounds=bounds, constraints=nlc, options=options)
+                     bounds=bounds, constraints=nlc, options=options, callback=callback)
     
     x_opt = result.x
     
     # Extract results
     uav_pos_opt = torch.tensor(x_opt[:2*N].reshape(2, N), dtype=torch.float32, device=device) * SIDE
-    Bandwidth_opt = x_opt[2*N:] * BW_total
+    Bandwidth_opt = x_opt[2*N:2*N+M]  # Hz
+    Offload_opt = x_opt[2*N+M:2*N+2*M]  # Fractions
     
-    # Calculate final rates
-    Rate_opt = rate_fn(x_opt, N, SIDE, BW_total, user_pos, H_M, H, F, P_T, P_N, device=device)
-    sumrate_mbps = torch.sum(Rate_opt).cpu().item() / 1e6
+    # Calculate final MEC throughputs
+    Throughput_opt = rate_fn(x_opt, N, SIDE, BW_total, user_pos, H_M, H, F, P_T, P_N,
+                              D_m, C_m, f_UAV, f_user, device=device)
+    sumrate_mbps = torch.sum(Throughput_opt).cpu().item() / 1e6
     
-    return uav_pos_opt.cpu().numpy(), Bandwidth_opt, Rate_opt.cpu().numpy(), sumrate_mbps
+    # Runtime checks and diagnostics
+    print("\n" + "="*70)
+    print("MEC Optimization Results:")
+    print("="*70)
+    print(f"  Min Throughput: {torch.min(Throughput_opt).cpu().item()/1e6:.6f} Mbps")
+    print(f"  Max Throughput: {torch.max(Throughput_opt).cpu().item()/1e6:.6f} Mbps")
+    print(f"  Sum Throughput: {sumrate_mbps:.6f} Mbps")
+    print(f"  Total Bandwidth Used: {np.sum(Bandwidth_opt)/1e6:.2f} MHz (Budget: {BW_total/1e6:.2f} MHz)")
+    print(f"  Avg Offloading Fraction: {np.mean(Offload_opt):.3f}")
+    
+    # Check CPU constraints
+    A = association(p_received(user_pos, uav_pos_opt, H_M, H, F, P_T, device=device))
+    idx = torch.argmax(A, dim=1).cpu().numpy()
+    o_m_torch = torch.tensor(Offload_opt, device=device)
+    for n in range(N):
+        assigned_mask = (idx == n)
+        cpu_load_n = np.sum((Offload_opt * C_m / f_UAV)[assigned_mask])
+        print(f"  UAV {n} CPU Load: {cpu_load_n:.3f} (Limit: 1.0)")
+    print("="*70)
+    
+    return uav_pos_opt.cpu().numpy(), Bandwidth_opt, Offload_opt, Throughput_opt.cpu().numpy(), sumrate_mbps
