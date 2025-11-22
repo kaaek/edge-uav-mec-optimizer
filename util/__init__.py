@@ -1,5 +1,5 @@
 """
-Utility modules for UAV-Ground Association Optimizer
+Utility modules for Edge UAV-MEC optimizer.
 """
 
 from .constants import constants

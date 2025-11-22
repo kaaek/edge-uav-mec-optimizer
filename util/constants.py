@@ -1,8 +1,6 @@
 """
 Constants module
 Author: Khalil El Kaaki & Joe Abi Samra
-Date: 23/10/2025
-Translated to Python with GPU support
 """
 
 def constants():
