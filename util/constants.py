@@ -31,9 +31,9 @@ def constants():
     TRIALS = 50         # Number of Monte Carlo trials
     
     # MEC-specific parameters
-    D_m = 5e6           # Task data size per user (bits) - 5 Mb
-    C_m = 1e9           # Computational complexity per user (CPU cycles) - 1 GHz-cycle
-    f_UAV = 10e9        # UAV MEC server CPU frequency (Hz) - 10 GHz
+    D_m = 2e6           # Task data size per user (bits) - 2 Mb
+    C_m = 2e9           # Computational complexity per user (CPU cycles) - 2 GHz-cycle
+    f_UAV = 1e10        # UAV MEC server CPU frequency (Hz) - 10 GHz
     f_user = 1e9        # User device CPU frequency (Hz) - 1 GHz
     
     return M, N, AREA, H, H_M, F, K, GAMMA, D_0, P_T, P_N, MAX_ITER, TOL, BW_total, R_MIN, SIDE, TRIALS, D_m, C_m, f_UAV, f_user
