@@ -1,8 +1,7 @@
 """
 Optimization algorithms for UAV network
 Author: Khalil El Kaaki & Joe Abi Samra
-Date: 25/10/2025
-Translated to Python with GPU support using PyTorch and scipy.optimize
+Date: November 2025
 """
 
 import torch

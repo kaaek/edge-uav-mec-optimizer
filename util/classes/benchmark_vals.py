@@ -1,8 +1,6 @@
 """
 Benchmark values for parameter sweeps
 Author: Khalil El Kaaki & Joe Abi Samra
-Date: 23/10/2025
-Translated to Python with GPU support
 """
 
 import numpy as np

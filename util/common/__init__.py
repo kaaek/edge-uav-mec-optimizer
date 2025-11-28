@@ -5,6 +5,18 @@ Author: Khalil El Kaaki & Joe Abi Samra
 import torch
 import numpy as np
 
+# Import channel reliability functions
+from .channel_reliability import (
+    rayleigh_channel_gain,
+    compute_instantaneous_snr,
+    channel_failure_probability,
+    channel_success_probability,
+    dual_channel_reliability,
+    multi_channel_reliability,
+    expected_channel_capacity_rayleigh,
+    sample_rayleigh_channel_realization
+)
+
 def p_received(user_pos, uav_pos, H_M, H, F, P_T, device='cuda'):
     """
     Calculates the received power using the Okumura-Hata model.
@@ -290,3 +302,95 @@ def compute_mec_throughput(R_m, o_m, D_m, C_m, f_UAV, f_user, device='cuda'):
     
     return Th_m
 
+def compute_total_offload_time(task, iot_device, uav, time_idx, H_M, H, F, P_T, P_N, bandwidth):
+    """
+    Compute total time for offloading a task to UAV with TDMA.
+    
+    With TDMA, the task gets full bandwidth during its time slot.
+    Total time = uplink transmission + UAV processing
+    
+    Args:
+        task: Task object with length_bits and required_cycles
+        iot_device: IoTDevice object with position
+        uav: UAV object with position and cpu_frequency (or BaseStation)
+        time_idx: Time index for UAV position lookup
+        H_M: Mobile height in meters
+        H: UAV height in meters
+        F: Frequency in Hz
+        P_T: Transmit power in dBm
+        P_N: Noise variance in dBm (for Rayleigh fading model)
+        bandwidth: Full bandwidth in Hz (BW_total in TDMA)
+    
+    Returns:
+        total_time: Total offloading time in seconds (uplink + compute)
+    """
+    device = iot_device.device
+    
+    # Get IoT device and UAV/BS positions
+    iot_pos = iot_device.position.unsqueeze(1)  # (2, 1)
+    
+    # Handle both UAV and BaseStation
+    if hasattr(uav, 'get_position'):
+        # UAV with time-varying position
+        server_pos = uav.get_position(time_idx).unsqueeze(1)  # (2, 1)
+        server_cpu = uav.cpu_frequency
+    else:
+        # BaseStation with static position
+        server_pos = uav.position.unsqueeze(1)  # (2, 1)
+        server_cpu = uav.cpu_frequency
+    
+    # Compute received power (M=1, N=1 case)
+    p_r = p_received(iot_pos, server_pos, H_M, H, F, P_T, device=device)  # (1, 1)
+    
+    # Compute spectral efficiency
+    P_r_lin = 10.0 ** (p_r / 10.0)
+    P_n_lin = 10.0 ** (P_N / 10.0)
+    SE = torch.log2(1 + P_r_lin / P_n_lin)  # bps/Hz
+    
+    # Compute uplink data rate (uses full bandwidth with TDMA)
+    data_rate = bandwidth * SE.item()  # bps
+    
+    # Uplink transmission time
+    t_uplink = task.length_bits / data_rate  # seconds
+    
+    # Server processing time
+    t_compute = task.required_cycles / server_cpu  # seconds
+    
+    # Total offloading time (downlink negligible)
+    total_time = t_uplink + t_compute
+    
+    return total_time
+
+
+def compute_offload_decision(task, iot_device, uav, time_idx, current_time, H_M, H, F, P_T, P_N, bandwidth):
+    """
+    Compare local vs offload processing and decide.
+    
+    Args:
+        task: Task object
+        iot_device: IoTDevice object
+        uav: UAV object
+        time_idx: Time index for UAV position
+        current_time: Current simulation time
+        H_M: Mobile height in meters
+        H: UAV height in meters
+        F: Frequency in Hz
+        P_T: Transmit power in dBm
+        P_N: Noise power in dBm
+        bandwidth: Allocated bandwidth in Hz
+    
+    Returns:
+        decision: 'offload' or 'local'
+        t_local: Local processing time
+        t_offload: Offloading time
+    """
+    # Compute local processing time
+    t_local = iot_device.compute_local_processing_time(task)
+    
+    # Compute offloading time
+    t_offload = compute_total_offload_time(task, iot_device, uav, time_idx, H_M, H, F, P_T, P_N, bandwidth)
+    
+    # Make decision based on which is faster
+    decision = 'offload' if t_offload < t_local else 'local'
+    
+    return decision, t_local, t_offload

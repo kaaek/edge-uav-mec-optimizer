@@ -1,8 +1,7 @@
 """
 Plotting functions for UAV network visualization
 Author: Khalil El Kaaki & Joe Abi Samra
-Date: 23/10/2025
-Translated to Python using matplotlib
+Date: November 2025
 """
 
 import matplotlib.pyplot as plt
