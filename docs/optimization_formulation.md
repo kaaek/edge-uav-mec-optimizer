@@ -440,12 +440,6 @@ Constraints:
   - TDMA constraint (one transmission at a time)
   - UAV energy limits
   - Trajectory optimization
-
-Key advantages of TDMA:
-  ✅ No bandwidth allocation variables
-  ✅ Full BW_total per task
-  ✅ Simpler problem formulation
-  ✅ More realistic (matches 5G/LTE)
 ```
 
 ## TDMA Implementation Details
