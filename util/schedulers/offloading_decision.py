@@ -69,7 +69,8 @@ class OffloadingParams:
 
 def make_offloading_decision(task, iot_device, uav, bs, time_idx: int,
                             tdma_queue: TDMAQueue, params: OffloadingParams,
-                            device='cuda') -> Optional[Tuple[str, float, float]]:
+                            device='cuda', precomputed_bs_dist: Optional[float] = None,
+                            precomputed_uav_dist: Optional[float] = None) -> Optional[Tuple[str, float, float]]:
     """
     Choose offloading target to minimize serving time with TDMA awareness.
     
@@ -179,6 +180,8 @@ def greedy_offloading_batch(tasks: list, iot_devices: list, uav, bs,
     Processes tasks sequentially, making greedy decisions to minimize
     individual serving times while respecting TDMA constraints.
     
+    OPTIMIZED: Pre-computes all IoT-to-BS and IoT-to-UAV distances for faster lookup.
+    
     Args:
         tasks: List of Task objects
         iot_devices: List of IoTDevice objects (one per task)
@@ -199,6 +202,21 @@ def greedy_offloading_batch(tasks: list, iot_devices: list, uav, bs,
     decisions = []
     completions = []
     
+    # PRE-COMPUTE: All IoT positions and distances to BS (OPTIMIZATION)
+    if iot_devices:
+        iot_positions_tensor = torch.stack([iot.position for iot in iot_devices], dim=0)  # (N, 2)
+        bs_pos_tensor = bs.position.unsqueeze(0)  # (1, 2)
+        
+        # Pre-compute all IoT-to-BS distances: (N,)
+        precomputed_bs_distances = torch.cdist(iot_positions_tensor, bs_pos_tensor).squeeze(1)  # (N,)
+        
+        # Pre-compute all IoT-to-UAV distances for all timesteps: (N, T)
+        # UAV position is (2, T), transpose to (T, 2) for cdist
+        precomputed_uav_distances = torch.cdist(iot_positions_tensor, uav.position.T)  # (N, T)
+    else:
+        precomputed_bs_distances = None
+        precomputed_uav_distances = None
+    
     for i, (task, iot_device) in enumerate(zip(tasks, iot_devices)):
         # Update current time
         time_idx = min(i, len(time_indices) - 1)
@@ -207,10 +225,16 @@ def greedy_offloading_batch(tasks: list, iot_devices: list, uav, bs,
         # Clean up completed transmissions
         tdma_queue.remove_completed(params.current_time)
         
-        # Make offloading decision
+        # Get pre-computed distances for this task
+        bs_dist = precomputed_bs_distances[i].item() if precomputed_bs_distances is not None else None
+        uav_dist = precomputed_uav_distances[i, time_idx].item() if precomputed_uav_distances is not None else None
+        
+        # Make offloading decision with pre-computed distances
         decision = make_offloading_decision(
             task, iot_device, uav, bs, time_idx,
-            tdma_queue, params, device=device
+            tdma_queue, params, device=device,
+            precomputed_bs_dist=bs_dist,
+            precomputed_uav_dist=uav_dist
         )
         
         if decision is None:

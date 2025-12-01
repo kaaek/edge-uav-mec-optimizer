@@ -118,22 +118,32 @@ class RecedingHorizonOptimizer:
         horizon_positions = horizon_positions.detach().requires_grad_(True)
         optimizer = torch.optim.Adam([horizon_positions], lr=self.learning_rate)
         
+        # Pre-compute pending device positions and urgencies (VECTORIZED)
+        if pending_tasks:
+            pending_positions = torch.stack([iot_device.position for iot_device in task_devices], dim=0)  # (N_pending, 2)
+        
         # Optimize horizon
         for _ in range(self.opt_iterations):
             optimizer.zero_grad()
             
-            # Loss: distance to target positions weighted by urgency
-            loss = 0.0
-            for h in range(H):
-                pos_h = horizon_positions[:, h]
+            # VECTORIZED: Compute all distances at once
+            if pending_tasks:
+                # Compute distances: (H, N_pending)
+                distances = torch.cdist(
+                    horizon_positions.T,  # (H, 2)
+                    pending_positions     # (N_pending, 2)
+                )  # Result: (H, N_pending)
                 
-                # Distance to pending task devices
-                for task, iot_device in zip(pending_tasks, task_devices):
-                    remaining_slack = task.slack - (current_time + h * dt - task.time_generated)
-                    if remaining_slack > 0:  # Task still viable
-                        urgency = 1.0 / max(remaining_slack, 0.1)
-                        dist = torch.sqrt(torch.sum((pos_h - iot_device.position) ** 2))
-                        loss += urgency * dist
+                # Compute urgencies for each task at each horizon step
+                loss = 0.0
+                for h in range(H):
+                    for i, task in enumerate(pending_tasks):
+                        remaining_slack = task.slack - (current_time + h * dt - task.time_generated)
+                        if remaining_slack > 0:  # Task still viable
+                            urgency = 1.0 / max(remaining_slack, 0.1)
+                            loss += urgency * distances[h, i]
+            else:
+                loss = 0.0
             
             # Velocity constraints
             # First step from current position
@@ -198,20 +208,17 @@ def optimize_trajectory_online(iot_devices: List, tasks: List, bs,
         device=device
     )
     
-    # Create task-device mapping
-    # Simple approach: assume tasks distributed across devices
-    # (In real scenario, you'd have this from task generation)
+    # Create task-device mapping from task metadata
+    # Each task knows its source device via device_id
     task_devices = []
     for task in tasks:
-        # Assign task to closest device (simplified)
-        min_dist = float('inf')
-        closest_device = iot_devices[0]
-        for iot in iot_devices:
-            dist = np.random.rand()  # Simplified - in reality use task metadata
-            if dist < min_dist:
-                min_dist = dist
-                closest_device = iot
-        task_devices.append(closest_device)
+        if task.device_id is not None and 0 <= task.device_id < len(iot_devices):
+            # Use task's recorded device ID
+            device = iot_devices[task.device_id]
+        else:
+            # Fallback: assign to first device (should not happen with proper task generation)
+            device = iot_devices[0]
+        task_devices.append(device)
     
     # Online optimization loop
     pending_tasks = tasks.copy()

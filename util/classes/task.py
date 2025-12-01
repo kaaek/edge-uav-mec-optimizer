@@ -19,9 +19,10 @@ class Task:
         time_generated: Time when task was generated (seconds)
         deadline: Task deadline (time_generated + slack)
         task_id: Optional task identifier
+        device_id: IoT device ID that generated this task (index into iot_devices list)
     """
     
-    def __init__(self, length_bits, computation_density, time_generated, slack, task_id=None):
+    def __init__(self, length_bits, computation_density, time_generated, slack, task_id=None, device_id=None):
         """
         Initialize Task.
         
@@ -31,6 +32,7 @@ class Task:
             time_generated: Time when task was generated in seconds (scalar)
             slack: Deadline slack time in seconds (scalar)
             task_id: Optional identifier for the task (int or string)
+            device_id: IoT device ID that generated this task (index into iot_devices list)
         """
         # Task data size (bits)
         self.length_bits = float(length_bits)
@@ -60,6 +62,9 @@ class Task:
         
         # Optional task ID
         self.task_id = task_id
+        
+        # IoT device ID that generated this task
+        self.device_id = device_id
     
     def get_remaining_time(self, current_time):
         """

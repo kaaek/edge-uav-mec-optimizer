@@ -70,8 +70,19 @@ def _gradient_based_optimization(iot_devices, tasks, bs, time_indices,
     """
     Gradient-based trajectory optimization.
     
-    Objective: Minimize average distance to IoT devices (proxy for channel quality)
+    Objective: MAXIMIZE EXPECTED NUMBER OF COMPLETED TASKS
+    
+    Key insight: Task completion depends on:
+    1. Channel reliability (function of UAV-device distance via SNR)
+    2. Serving time (upload + compute, also depends on distance via data rate)
+    3. Task deadline constraint
+    
+    Loss function: -sum(P_success(d) * P_deadline_met(d, rate(d)))
+    where d = distance, rate(d) = f(distance), P_success = f(SNR(distance))
+    
     Constraints: Maximum velocity between consecutive positions
+    
+    This directly optimizes for task completion, not a distance proxy.
     """
     T = len(time_indices)
     dt = (time_indices[1] - time_indices[0]).item() if T > 1 else 1.0
@@ -92,25 +103,115 @@ def _gradient_based_optimization(iot_devices, tasks, bs, time_indices,
     # Detach and re-enable gradient
     positions = positions.detach().requires_grad_(True)
     
+    # Pre-compute and cache IoT device positions (optimization: compute once, reuse)
+    # Stack into single tensor for efficient vectorized operations
+    # Shape: (M, 2) where M is number of IoT devices
+    cached_iot_positions = torch.stack([iot.position for iot in iot_devices], dim=0)  # (M, 2)
+    
+    # Import channel reliability function
+    from ..common.channel_reliability import channel_success_probability
+    from ..common import p_received
+    
     # Optimizer
-    optimizer = torch.optim.Adam([positions], lr=learning_rate)
+    optimizer = torch.optim.SGD([positions], lr=learning_rate, momentum=0.9)
     
     best_positions = positions.clone().detach()
     best_loss = float('inf')
     
-    print(f"[OPTIMIZER] Starting gradient descent (max_iter={max_iter})")
+    # Convert SNR threshold from linear to dB for channel_success_probability function
+    snr_thresh_dB = 10.0 * torch.log10(torch.tensor(params.snr_thresh))
+    
+    print(f"[SGD] Starting gradient descent (max_iter={max_iter})")
     for iteration in range(max_iter):
         optimizer.zero_grad()
         
-        # Compute loss: average distance to IoT devices (want to minimize)
-        # This encourages UAV to stay close to IoT cluster
-        distances = torch.zeros(T, device=device)
-        for iot in iot_devices:
-            iot_pos = iot.position.unsqueeze(1).expand(2, T)  # (2, T)
-            dist = torch.sqrt(torch.sum((positions - iot_pos) ** 2, dim=0))  # (T,)
-            distances += dist
+        # VECTORIZED: Compute all distances at once using torch.cdist
+        # positions.T: (T, 2) - UAV positions at each timestep
+        # cached_iot_positions: (M, 2) - IoT device positions
+        # Result: (T, M) - distance from each timestep to each device
+        distances_2d = torch.cdist(
+            positions.T,               # (T, 2)
+            cached_iot_positions       # (M, 2)
+        )  # Output: (T, M)
         
-        avg_distance = distances.mean() / len(iot_devices)
+        # Compute 3D distances including UAV height
+        # d_3d = sqrt(d_2d^2 + h^2)
+        distances_3d = torch.sqrt(distances_2d**2 + uav_height**2)  # (T, M)
+        
+        # For received power calculation, we need positions not distances
+        # UAV positions: (T, 2) -> transpose to (2, T) for p_received
+        # IoT positions: cached_iot_positions is (M, 2) -> transpose to (2, M)
+        uav_pos_for_calc = positions.T.T  # (2, T)
+        iot_pos_for_calc = cached_iot_positions.T  # (2, M)
+        
+        # p_received computes for all (user, uav) pairs, returns (M, T)
+        # We need (T, M) so we'll transpose the result
+        P_r_dBm_MT = p_received(
+            user_pos=iot_pos_for_calc,  # (2, M)
+            uav_pos=uav_pos_for_calc,   # (2, T)
+            H_M=params.H_M,
+            H=uav_height,
+            F=params.F,
+            P_T=params.P_T,
+            device=device
+        )  # Returns (M, T)
+        P_r_dBm = P_r_dBm_MT.T  # (T, M)
+        
+        # Compute channel success probability for each (time, device) pair
+        # P_success = exp(-SNR_threshold / SNR_avg)
+        # This is differentiable and captures how UAV position affects channel reliability
+        channel_prob = channel_success_probability(
+            P_r_dBm,                    # (T, M)
+            params.noise_var,           # scalar
+            snr_thresh_dB.item(),       # scalar
+            rayleigh_scale=1.0,
+            device=device
+        )  # Output: (T, M)
+        
+        # Approximate data rate based on received power
+        # Higher P_r → higher SNR → higher data rate
+        # Using Shannon capacity as approximation: R ≈ BW * log2(1 + SNR)
+        # SNR_avg = (P_r * E[|h|^2]) / noise_var
+        P_r_linear = 10.0 ** (P_r_dBm / 10.0)
+        noise_linear = 10.0 ** (params.noise_var / 10.0)
+        mean_channel_gain = 2.0  # E[|h|^2] for Rayleigh with σ=1
+        snr_avg = (P_r_linear * mean_channel_gain) / noise_linear
+        data_rate = params.BW_total * torch.log2(1.0 + snr_avg)  # (T, M) in bps
+        
+        # Estimate average task completion probability
+        # For each device, estimate if a typical task would complete
+        # Assuming average task properties from the task list
+        if len(tasks) > 0:
+            avg_task_size = sum(t.length_bits for t in tasks) / len(tasks)
+            avg_task_cycles = sum(t.total_cycles for t in tasks) / len(tasks)
+            avg_slack = sum(t.slack for t in tasks) / len(tasks)
+            
+            # Serving time = upload_time + compute_time
+            # upload_time = task_size / data_rate
+            # compute_time = task_cycles / uav_cpu_freq
+            upload_time = avg_task_size / (data_rate + 1e-6)  # (T, M), avoid div by zero
+            compute_time = avg_task_cycles / uav_cpu_frequency  # scalar
+            serving_time = upload_time + compute_time  # (T, M)
+            
+            # Probability task meets deadline
+            # Use sigmoid to make it differentiable: P ~ sigmoid(-(serving_time - deadline))
+            # Higher negative value → closer to 1 (meets deadline)
+            # Lower value → closer to 0 (misses deadline)
+            deadline_margin = avg_slack - serving_time  # (T, M)
+            deadline_prob = torch.sigmoid(deadline_margin * 2.0)  # Scaled sigmoid
+            
+            # Expected task completion = P(channel success) * P(meets deadline)
+            completion_prob = channel_prob * deadline_prob  # (T, M)
+        else:
+            # Fallback: just use channel probability
+            completion_prob = channel_prob  # (T, M)
+        
+        # Objective: MAXIMIZE expected task completions
+        # Average across time and devices to get overall expected completion rate
+        expected_completions = completion_prob.mean()
+        
+        # Loss: NEGATIVE expected completions (since we minimize loss)
+        task_loss = -expected_completions
         
         # Velocity constraint penalty
         velocity_penalty = 0.0
@@ -118,10 +219,10 @@ def _gradient_based_optimization(iot_devices, tasks, bs, time_indices,
             position_diff = positions[:, 1:] - positions[:, :-1]  # (2, T-1)
             velocities = torch.sqrt(torch.sum(position_diff ** 2, dim=0)) / dt  # (T-1,)
             velocity_violations = torch.relu(velocities - uav_max_velocity)
-            velocity_penalty = 10.0 * velocity_violations.sum()  # Heavy penalty
+            velocity_penalty = 100.0 * velocity_violations.sum()  # Heavy penalty
         
-        # Total loss
-        loss = avg_distance + velocity_penalty
+        # Total loss = -expected_completions + velocity_penalty
+        loss = task_loss + velocity_penalty
         
         # Backward pass
         loss.backward()
@@ -135,12 +236,13 @@ def _gradient_based_optimization(iot_devices, tasks, bs, time_indices,
         # Progress reporting
         if iteration % 10 == 0 or iteration == max_iter - 1:
             print(f"[OPTIMIZER] Iter {iteration:3d}/{max_iter}: loss={loss.item():.4f}, "
-                  f"avg_dist={avg_distance.item():.2f}, vel_penalty={velocity_penalty.item():.4f}")
+                  f"expected_completion={expected_completions.item():.4f}, "
+                  f"vel_penalty={velocity_penalty.item():.4f}")
         
         # Early stopping
         if iteration > 10 and velocity_penalty.item() < 0.1:
             if iteration % 10 == 0:
-                improvement = (best_loss - loss.item()) / best_loss if best_loss > 0 else 0
+                improvement = (best_loss - loss.item()) / abs(best_loss) if abs(best_loss) > 0 else 0
                 if improvement < 0.001:
                     print(f"[OPTIMIZER] Early stopping at iteration {iteration} (improvement < 0.1%)")
                     break
