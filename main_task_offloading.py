@@ -22,8 +22,6 @@ Date: December, 2025
 python -m pyinstrument -r html -o profile.html ./main_task_offloading.py
 or
 python -m cProfile -o profile.prof main_task_offloading.py
-
-C:/Users/USER/.pyenv/pyenv-win/versions/3.11.8/python.exe -m pyinstrument -r html -o profile.html ./main_task_offloading.py
 """
 
 import torch
@@ -45,9 +43,9 @@ print("  UAV-MEC TASK OFFLOADING OPTIMIZER")
 print("  Trajectory Optimization for Aerial Base Stations")
 print("=" * 80)
 if device == 'cuda':
-    print(f"[OK] Using CUDA GPU: {torch.cuda.get_device_name(0)}")
+    print(f"✓ Using CUDA GPU: {torch.cuda.get_device_name(0)}")
 else:
-    print("[WARNING] CUDA not available - Running on CPU")
+    print("⚠ CUDA not available - Running on CPU")
 print("=" * 80)
 
 # ========================================================================
@@ -55,51 +53,54 @@ print("=" * 80)
 # ========================================================================
 BASE_CONFIG = {
     # Time
-    'T': 100,  # Increased for better trajectory resolution and more opportunities for optimization
-    'duration': 5.0,  # total duration in seconds 
+    'T': 70,
+    'duration': 20.0,  # total duration in seconds 
     
     # UAV
     'uav_cpu_frequency': 5e9,   # 5 GHz
     'uav_max_velocity': 20.0,   # m/s
     'uav_height': 50.0,         # meters
-    'uav_radius': 50.0,         # circular path radius
+    'uav_radius': 200.0,         # circular path radius
+    'initial_position': [200.0, 200.0],
     
     # Base station
-    'bs_position': [200.0, 200.0],
-    'bs_cpu_frequency': 10e9,   # 10 GHz
+    'bs_position': [700.0, 700.0],  # Further away to make UAV proximity advantage matter
+    'bs_cpu_frequency': 4e9,    # 4 GHz (lower than UAV to favor proximity)
     'bs_height': 30.0,          # meters
     
     # IoT device 
     'num_devices': 5,
     'iot_cpu_frequency': 1e9,   # 1 GHz
     'iot_lambda_rate': 0.5,     # tasks/second (Poisson arrival rate)
+    'device_area_min': 50,   # meters
+    'device_area_max': 350,  # meters
     
     # Task (generated via Poisson process)
-    'task_size_min': 1e6,  # 1 Mb
-    'task_size_max': 5e6,  # 5 Mb
+    'task_size_min': 1.5e6,  # 1.5 Mb
+    'task_size_max': 7e6,  # 7 Mb
     'cycles_per_bit_min': 500,
     'cycles_per_bit_max': 1500,
-    'slack_min': 0.5,  # seconds
-    'slack_max': 2.0,  # seconds
+    'slack_min': 0.7,   # seconds (increased to reduce infeasible tasks)
+    'slack_max': 2.0,   # seconds
     
     # System parameters
-    'BW_total': 20e6,   # 20 MHz
+    'BW_total': 15e6,   # 15 MHz
     'H_M': 1.5,         # IoT device height (meters)
     'F': 2.4e9,         # 2.4 GHz carrier
     'P_T': 20.0,        # 20 dBm transmit power
     'noise_var': -80.0, # -80 dBm noise variance
-    'snr_thresh': 10.0, # SNR threshold (linear)
-    'P_min': 0.90,      # 90% reliability
+    'snr_thresh': 15.0, # SNR threshold (linear)
+    'P_min': 0.95,      # 95% reliability
     
     # Simulation
-    'trials': 10,       # Monte Carlo trials
-    'seed_base': 42,
+    'trials': 5,        # Monte Carlo trials (increased for statistical reliability)
+    'seed_base': 50,
     
     # Trajectory optimization
     'optimize_trajectory': True,    # Enable UAV trajectory optimization
     'online_optimization': True,    # Use online receding horizon (vs offline batch)
     'use_circular_baseline': False, # Use circular trajectory (for baseline comparison)
-    'planning_horizon': 10,         # Planning horizon for online optimization
+    'planning_horizon': 15,         # Planning horizon for online optimization
 }
 
 
@@ -122,7 +123,6 @@ SWEEP_CONFIGS = {
     #     'title': 'Impact of UAV Computing Capacity on Task Completion Rate',
     #     'scale': 1e9,
     # },
-    # ---------------------------------------------------------------------------------
     # 'bandwidth': {
     #     'values': [5e6, 10e6, 20e6, 40e6, 60e6, 80e6, 100e6],  # Hz
     #     'param': 'BW_total',
@@ -132,7 +132,7 @@ SWEEP_CONFIGS = {
     #     'scale': 1e6,
     # },
     'task_size': {
-        'values': [(1e6, 3e6), (2e6, 8e6)],  # Just 2 values for testing
+        'values': [(1e6, 3e6), (2e6, 6e6), (3e6, 9e6)],  # (min, max) bits
         'param': 'task_size',
         'xlabel': 'Average Task Size (Mb)',
         'ylabel': 'Task Completion Rate (%)',
@@ -146,26 +146,33 @@ SWEEP_CONFIGS = {
     #     'ylabel': 'Task Completion Rate (%)',
     #     'title': 'Impact of Task Computational Complexity on Completion Rate',
     # },
-    # 'num_devices': {
-    #     'values': [2, 5, 10, 15, 20, 25],
-    #     'param': 'num_devices',
-    #     'xlabel': 'Number of IoT Devices',
-    #     'ylabel': 'Task Completion Rate (%)',
-    #     'title': 'System Scalability: Task Completion vs Network Size',
-    # },
+    'num_devices': {
+        'values': [2, 5, 10, 15, 20],
+        'param': 'num_devices',
+        'xlabel': 'Number of IoT Devices',
+        'ylabel': 'Task Completion Rate (%)',
+        'title': 'System Scalability: Task Completion vs Network Size',
+    },
+    'bandwidth': {
+        'values': [5e6, 10e6, 20e6, 40e6, 60e6],  # Hz
+        'param': 'BW_total',
+        'xlabel': 'Total Bandwidth (MHz)',
+        'ylabel': 'Task Completion Rate (%)',
+        'title': 'Impact of Communication Bandwidth on Task Completion Rate',
+        'scale': 1e6,
+    },
 }
 
 # ========================================================================
 # Helper Functions
 # ========================================================================
 
-def create_scenario(config, trial_seed, tasks=None, device='cuda'):
+def create_scenario(config, trial_seed, device='cuda'):
     """Create UAV-MEC scenario with given configuration.
     
     Args:
         config: Configuration dictionary
         trial_seed: Seed for this specific trial (generates new random IoT positions)
-        tasks: Pre-generated tasks for trajectory optimization (optional)
         device: 'cuda' or 'cpu'
     """
     T = config['T']                 # The time vector
@@ -199,8 +206,8 @@ def create_scenario(config, trial_seed, tasks=None, device='cuda'):
     np.random.seed(trial_seed)
     torch.manual_seed(trial_seed)
     for i in range(config['num_devices']):
-        pos_x = np.random.uniform(50, 150)
-        pos_y = np.random.uniform(50, 150)
+        pos_x = np.random.uniform(BASE_CONFIG.get('device_area_min'), BASE_CONFIG.get('device_area_max'))
+        pos_y = np.random.uniform(BASE_CONFIG.get('device_area_min'), BASE_CONFIG.get('device_area_max'))
         
         iot = IoTDevice(
             position=[pos_x, pos_y],
@@ -224,25 +231,30 @@ def create_scenario(config, trial_seed, tasks=None, device='cuda'):
     )
     
     # Optimize UAV trajectory if requested
-    initial_position = [100.0, 100.0]  # Center of area
+    initial_position = BASE_CONFIG.get('initial_position')
+    
+    if config.get('no_uav_baseline', False):
+        # No UAV baseline - skip UAV entirely
+        print("  → No UAV baseline (Local + BS only)")
+        uav = None
+        optimization_tasks = None
+        return uav, bs, iot_devices, time_indices, params, optimization_tasks
     
     if config.get('use_circular_baseline', False):
         # Use circular trajectory as baseline
-        print("  -> Using circular trajectory baseline (no optimization)")
+        print("  → Using circular trajectory baseline (no optimization)")
         # Circular trajectory already computed above - just use it
         # Compute velocity from circular positions
         uav_velocity = compute_trajectory_velocity(uav_position, time_indices)
         
     elif config.get('optimize_trajectory', True):
-        # Use pre-generated tasks for trajectory optimization
-        if tasks is None:
-            print("  ⚠ WARNING: No tasks provided for optimization!")
-            tasks, _ = generate_tasks(iot_devices, config)
+        # Generate tasks first (needed for trajectory optimization)
+        tasks, task_owners = generate_tasks(iot_devices, config)
         
-        print("  -> Starting trajectory optimization...")
-        if config.get('online_optimization', False):
+        print("  → Starting trajectory optimization...")
+        if config.get('online_optimization', True):
             # Online receding horizon optimization
-            print("     - Mode: Online (Receding Horizon)")
+            print("     • Mode: Online (Receding Horizon)")
             uav_position = optimize_trajectory_online(
                 iot_devices=iot_devices,
                 tasks=tasks,
@@ -258,7 +270,7 @@ def create_scenario(config, trial_seed, tasks=None, device='cuda'):
             )
         else:
             # Offline batch optimization
-            print("     - Mode: Offline (Batch Gradient Descent)")
+            print("     • Mode: Offline (Batch Gradient Descent)")
             uav_position = optimize_uav_trajectory(
                 iot_devices=iot_devices,
                 tasks=tasks,
@@ -270,12 +282,12 @@ def create_scenario(config, trial_seed, tasks=None, device='cuda'):
                 initial_position=initial_position,
                 params=params,
                 device=device,
-                max_iter=20,
-                learning_rate=1.0,
+                max_iter=25,
+                learning_rate=0.5,
                 method='gradient'
             )
         
-        print("  [OK] Trajectory optimization completed")
+        print("  ✓ Trajectory optimization completed\n")
         
         # Compute velocity from optimized positions
         uav_velocity = compute_trajectory_velocity(uav_position, time_indices)
@@ -299,7 +311,13 @@ def create_scenario(config, trial_seed, tasks=None, device='cuda'):
     uav.velocity = uav_velocity
     uav.height = config['uav_height']
     
-    return uav, bs, iot_devices, time_indices, params
+    # Return tasks used for optimization (or None if circular baseline)
+    if config.get('optimize_trajectory', True) and not config.get('use_circular_baseline', False):
+        optimization_tasks = (tasks, task_owners)
+    else:
+        optimization_tasks = None
+    
+    return uav, bs, iot_devices, time_indices, params, optimization_tasks
 
 
 def generate_tasks(iot_devices, config):
@@ -399,7 +417,7 @@ def visualize_trajectory(uav, bs, iot_devices, optimization_mode, sweep_name, pa
     # Save
     save_path = f'results/{save_name}.png'
     plt.savefig(save_path, dpi=300, bbox_inches='tight')
-    print(f"     [PLOT] Saved trajectory: {save_path}")
+    print(f"     📊 Saved trajectory: {save_path}")
     plt.close(fig)
 
 
@@ -422,46 +440,71 @@ def run_trial(config, trial_seed, device='cuda', save_trajectory=False,
     np.random.seed(trial_seed)
     torch.manual_seed(trial_seed)
     
-    # First create temporary scenario to get IoT devices for task generation
-    # (We need IoT devices to generate tasks, but tasks are needed for optimization)
-    temp_iot_devices = []
-    for i in range(config['num_devices']):
-        pos_x = np.random.uniform(50, 150)
-        pos_y = np.random.uniform(50, 150)
-        iot = IoTDevice(
-            position=[pos_x, pos_y],
-            cpu_frequency=config['iot_cpu_frequency'],
-            lambda_rate=config['iot_lambda_rate'],
-            device=device
-        )
-        temp_iot_devices.append(iot)
+    # Create scenario with new random IoT positions for this trial
+    uav, bs, iot_devices, time_indices, params, optimization_tasks = create_scenario(config, trial_seed, device)
     
-    # Generate tasks for trajectory optimization
-    optimization_tasks, _ = generate_tasks(temp_iot_devices, config)
+    # ============================================================================
+    # TRACE: Trajectory Metrics
+    # ============================================================================
+    if uav is not None:
+        uav_pos_np = uav.position.cpu().numpy()  # (2, T)
+        uav_vel_np = uav.velocity.cpu().numpy()  # (2, T)
+        
+        # Compute trajectory characteristics
+        distances = np.sqrt(np.sum(np.diff(uav_pos_np, axis=1)**2, axis=0))
+        total_distance = np.sum(distances)
+        avg_distance_per_step = np.mean(distances)
+        
+        velocities = np.sqrt(np.sum(uav_vel_np**2, axis=0))
+        avg_velocity = np.mean(velocities)
+        max_velocity = np.max(velocities)
+        
+        # Compute average distance from UAV to all IoT devices over time
+        iot_positions = torch.stack([iot.position for iot in iot_devices], dim=0)  # (N, 2)
+        uav_positions_t = uav.position.T  # (T, 2)
+        all_distances = torch.cdist(iot_positions, uav_positions_t)  # (N, T)
+        avg_dist_to_devices = all_distances.mean().item()
+        min_dist_to_devices = all_distances.min().item()
+        
+        print(f"\n     [TRACE] === TRAJECTORY METRICS ({optimization_mode.upper()}) ===")
+        print(f"     • Total distance traveled: {total_distance:.2f} m")
+        print(f"     • Avg distance per step: {avg_distance_per_step:.2f} m")
+        print(f"     • Avg velocity: {avg_velocity:.2f} m/s (max: {max_velocity:.2f} m/s)")
+        print(f"     • Avg distance to IoT devices: {avg_dist_to_devices:.2f} m")
+        print(f"     • Min distance to any IoT device: {min_dist_to_devices:.2f} m")
+    else:
+        print(f"\n     [TRACE] === NO UAV DEPLOYMENT ===")
+        print(f"     • Using only local execution and base station offloading")
     
-    # Reset seeds to ensure same IoT positions in create_scenario
-    np.random.seed(trial_seed)
-    torch.manual_seed(trial_seed)
+    # Use tasks from optimization if available, otherwise generate new ones
+    if optimization_tasks is not None:
+        print(f"\n     [TRACE] Using tasks from optimization phase (avoiding mismatch)")
+        tasks, task_owners = optimization_tasks
+    else:
+        # Generate tasks using Poisson process (for circular baseline or no_uav)
+        tasks, task_owners = generate_tasks(iot_devices, config)
     
-    # Create scenario with same random state, passing tasks for optimization
-    uav, bs, iot_devices, time_indices, params = create_scenario(config, trial_seed, optimization_tasks, device)
-    
-    # Generate DIFFERENT tasks for evaluation using a different seed
-    # This ensures trajectory optimization matters - optimized trajectory should handle
-    # different task arrivals better than circular baseline
-    eval_seed = trial_seed + 10000  # Use different seed for evaluation tasks
-    np.random.seed(eval_seed)
-    torch.manual_seed(eval_seed)
-    evaluation_tasks, task_owners = generate_tasks(iot_devices, config)
     task_iot_devices = [iot_devices[owner] for owner in task_owners]
     
     # Count tasks per device
     tasks_per_device = {i: task_owners.count(i) for i in range(len(iot_devices))}
-    print(f"     - Generated {len(evaluation_tasks)} tasks (Poisson) - Distribution: {dict(tasks_per_device)}")
-    print(f"     - Running greedy offloading scheduler...")
-    # Run greedy offloading with evaluation tasks
+    print(f"\n     [TRACE] === TASK GENERATION ===")
+    print(f"     • Generated {len(tasks)} tasks (Poisson)")
+    print(f"     • Distribution: {dict(tasks_per_device)}")
+    
+    # Compute task statistics
+    task_sizes = [t.length_bits / 1e6 for t in tasks]  # Mb
+    task_slacks = [t.slack for t in tasks]  # seconds
+    task_densities = [t.computation_density for t in tasks]  # cycles/bit
+    
+    print(f"     • Task sizes: min={min(task_sizes):.2f} Mb, max={max(task_sizes):.2f} Mb, avg={np.mean(task_sizes):.2f} Mb")
+    print(f"     • Task slacks: min={min(task_slacks):.2f} s, max={max(task_slacks):.2f} s, avg={np.mean(task_slacks):.2f} s")
+    print(f"     • Computation density: min={min(task_densities):.0f}, max={max(task_densities):.0f}, avg={np.mean(task_densities):.0f} cycles/bit")
+    
+    print(f"\n     • Running greedy offloading scheduler...")
+    # Run greedy offloading
     results = greedy_offloading_batch(
-        tasks=evaluation_tasks,
+        tasks=tasks,
         iot_devices=task_iot_devices,
         uav=uav,
         bs=bs,
@@ -470,18 +513,53 @@ def run_trial(config, trial_seed, device='cuda', save_trajectory=False,
         device=device
     )
     
-    # Save trajectory visualization if requested
-    if save_trajectory:
-        # Format parameter value for filename
-        if isinstance(param_value, (tuple, list)):
-            avg_val = sum(param_value) / len(param_value) / 1e6  # Convert to Mb for task_size
-            param_str = f"{avg_val:.1f}Mb"
-        elif isinstance(param_value, float):
-            param_str = f"{param_value:.1f}"
-        else:
-            param_str = str(param_value)
-        
-        save_name = f'trajectory_{sweep_name}_{optimization_mode}_{param_str}_seed{trial_seed}'
+    # ============================================================================
+    # TRACE: Offloading Decision Analysis
+    # ============================================================================
+    decisions = results['decisions']
+    completions = results['completions']
+    
+    # Count decisions by target
+    decision_counts = {'local': 0, 'bs': 0, 'uav': 0, 'none': 0}
+    completion_by_target = {'local': [], 'bs': [], 'uav': [], 'none': []}
+    times_by_target = {'local': [], 'bs': [], 'uav': []}
+    channel_probs_by_target = {'local': [], 'bs': [], 'uav': []}
+    
+    for (target, total_time, channel_prob), completion in zip(decisions, completions):
+        decision_counts[target] += 1
+        completion_by_target[target].append(completion)
+        if target != 'none':
+            times_by_target[target].append(total_time)
+            channel_probs_by_target[target].append(channel_prob)
+    
+    print(f"\n     [TRACE] === OFFLOADING DECISIONS ===")
+    print(f"     • Local: {decision_counts['local']} ({decision_counts['local']/len(tasks)*100:.1f}%)")
+    print(f"     • BS: {decision_counts['bs']} ({decision_counts['bs']/len(tasks)*100:.1f}%)")
+    print(f"     • UAV: {decision_counts['uav']} ({decision_counts['uav']/len(tasks)*100:.1f}%)")
+    print(f"     • None (infeasible): {decision_counts['none']} ({decision_counts['none']/len(tasks)*100:.1f}%)")
+    
+    print(f"\n     [TRACE] === COMPLETION RATES BY TARGET ===")
+    for target in ['local', 'bs', 'uav']:
+        if completion_by_target[target]:
+            completed = sum(completion_by_target[target])
+            total = len(completion_by_target[target])
+            rate = completed / total * 100 if total > 0 else 0
+            print(f"     • {target.upper()}: {completed}/{total} ({rate:.1f}%)")
+            
+            if times_by_target[target]:
+                avg_time = np.mean(times_by_target[target])
+                avg_channel = np.mean(channel_probs_by_target[target])
+                print(f"       - Avg serving time: {avg_time:.3f} s")
+                print(f"       - Avg channel prob: {avg_channel:.3f}")
+    
+    print(f"\n     [TRACE] === OVERALL RESULTS ===")
+    print(f"     • Total completed: {results['total_completed']}/{len(tasks)}")
+    print(f"     • Completion rate: {results['completion_rate']*100:.2f}%")
+    
+    # Save trajectory visualization if requested (skip for no_uav baseline)
+    if save_trajectory and uav is not None:
+        param_str = f"{param_value:.1f}" if isinstance(param_value, float) else str(param_value)
+        save_name = f'trajectory_{sweep_name}_{optimization_mode}_param{param_str}_seed{trial_seed}'
         visualize_trajectory(uav, bs, iot_devices, optimization_mode, sweep_name, param_value, save_name)
     
     return results['completion_rate']
@@ -519,20 +597,23 @@ def run_sweep(sweep_name, sweep_config, base_config, optimization_mode, device='
         if optimization_mode == 'circular':
             config['use_circular_baseline'] = True
             config['optimize_trajectory'] = False
-            config['online_optimization'] = False  # Explicitly set to False for circular
         elif optimization_mode == 'online':
             config['use_circular_baseline'] = False
-            config['optimize_trajectory'] = True
             config['online_optimization'] = True
         elif optimization_mode == 'offline':
             config['use_circular_baseline'] = False
-            config['optimize_trajectory'] = True
             config['online_optimization'] = False
+        elif optimization_mode == 'no_uav':
+            config['no_uav_baseline'] = True
+            config['optimize_trajectory'] = False
         # if 'both', use base_config setting
         
         # Run trials
         trial_results = []
         for trial in range(config['trials']):
+            print(f"\n{'='*80}")
+            print(f"  Trial {trial+1}/{config['trials']} ({optimization_mode.upper()})")
+            print(f"{'='*80}")
             seed = config['seed_base'] + trial
             
             # Save trajectory visualization for the first trial of the LAST parameter value only
@@ -547,7 +628,8 @@ def run_sweep(sweep_name, sweep_config, base_config, optimization_mode, device='
                 param_value=val
             )
             trial_results.append(completion_rate)
-            print(f"     [OK] Trial {trial+1} complete: {completion_rate*100:.1f}% completion rate\n")
+            print(f"\n     ✓ Trial {trial+1} complete: {completion_rate*100:.1f}% completion rate")
+            print(f"{'='*80}\n")
         
         # Compute statistics
         mean_rate = np.mean(trial_results)
@@ -559,13 +641,13 @@ def run_sweep(sweep_name, sweep_config, base_config, optimization_mode, device='
         # Display for tuples (task_size, cycles_per_bit)
         if param == 'task_size':
             avg_size = (val[0] + val[1]) / 2 / 1e6
-            print(f"\n  [RESULT] [{optimization_mode.upper():8s}] Task Size {avg_size:4.1f} Mb  ->  Completion: {mean_rate*100:5.1f}% +/- {std_rate*100:4.1f}%")
+            print(f"\n  📊 [{optimization_mode.upper():8s}] Task Size {avg_size:4.1f} Mb  →  Completion: {mean_rate*100:5.1f}% ± {std_rate*100:4.1f}%")
         elif param == 'cycles_per_bit':
             avg_cycles = (val[0] + val[1]) / 2
-            print(f"\n  [RESULT] [{optimization_mode.upper():8s}] Cycles/Bit {avg_cycles:5.0f}  ->  Completion: {mean_rate*100:5.1f}% +/- {std_rate*100:4.1f}%")
+            print(f"\n  📊 [{optimization_mode.upper():8s}] Cycles/Bit {avg_cycles:5.0f}  →  Completion: {mean_rate*100:5.1f}% ± {std_rate*100:4.1f}%")
         else:
             val_display = val / sweep_config.get('scale', 1.0) if 'scale' in sweep_config else val
-            print(f"\n  [RESULT] [{optimization_mode.upper():8s}] {param}={val_display:.1f}  ->  Completion: {mean_rate*100:5.1f}% +/- {std_rate*100:4.1f}%")
+            print(f"\n  📊 [{optimization_mode.upper():8s}] {param}={val_display:.1f}  →  Completion: {mean_rate*100:5.1f}% ± {std_rate*100:4.1f}%")
     
     return completion_rates, completion_stds
 
@@ -631,16 +713,17 @@ def plot_sweep_results(values, completion_rates, completion_stds,
     # Save
     save_path = f'results/{save_name}.png'
     plt.savefig(save_path, dpi=300, bbox_inches='tight')
-    print(f"  [OK] Saved: {save_path}")
+    print(f"  ✓ Saved: {save_path}")
     
     return fig
 
 
-def plot_three_way_comparison(values, circular_rates, circular_stds,
-                               online_rates, online_stds,
-                               offline_rates, offline_stds,
-                               sweep_config, save_name):
-    """Plot three-way comparison: Circular baseline vs Online vs Offline optimization."""
+def plot_four_way_comparison(values, no_uav_rates, no_uav_stds,
+                              circular_rates, circular_stds,
+                              online_rates, online_stds,
+                              offline_rates, offline_stds,
+                              sweep_config, save_name):
+    """Plot four-way comparison: No UAV vs Circular vs Online vs Offline."""
     # Convert values for display
     if sweep_config['param'] in ['task_size', 'cycles_per_bit']:
         x_vals = [(v[0] + v[1]) / 2 for v in values]
@@ -651,6 +734,9 @@ def plot_three_way_comparison(values, circular_rates, circular_stds,
         x_vals = [v / sweep_config['scale'] for v in x_vals]
     
     # Convert to percentages
+    no_uav_y = [r * 100 for r in no_uav_rates]
+    no_uav_y_stds = [s * 100 for s in no_uav_stds]
+    
     circular_y = [r * 100 for r in circular_rates]
     circular_y_stds = [s * 100 for s in circular_stds]
     
@@ -663,26 +749,31 @@ def plot_three_way_comparison(values, circular_rates, circular_stds,
     # Plot
     fig, ax = plt.subplots(figsize=(12, 7))
     
-    # Three lines
+    # Four lines
+    ax.errorbar(x_vals, no_uav_y, yerr=no_uav_y_stds, 
+                marker='x', markersize=10, linewidth=2.5, capsize=5,
+                label='No UAV (Local + BS only)', 
+                color='#E07A5F', linestyle=':', alpha=0.8)
+    
     ax.errorbar(x_vals, circular_y, yerr=circular_y_stds, 
                 marker='D', markersize=8, linewidth=2.5, capsize=5,
-                label='Circular Baseline (No Optimization)', 
+                label='UAV Circular Baseline', 
                 color='#808080', linestyle='--', alpha=0.8)
     
     ax.errorbar(x_vals, online_y, yerr=online_y_stds, 
                 marker='o', markersize=8, linewidth=2.5, capsize=5,
-                label='Online (Receding Horizon)', color='#2E86AB')
+                label='UAV Online Optimization', color='#2E86AB')
     
     ax.errorbar(x_vals, offline_y, yerr=offline_y_stds, 
                 marker='s', markersize=8, linewidth=2.5, capsize=5,
-                label='Offline (Batch Gradient)', color='#A23B72')
+                label='UAV Offline Optimization', color='#A23B72')
     
     ax.set_xlabel(sweep_config['xlabel'], fontsize=14, fontweight='bold')
     ylabel = sweep_config.get('ylabel', 'Task Completion Rate (%)')
     ax.set_ylabel(ylabel, fontsize=14, fontweight='bold')
     
     title = sweep_config['title']
-    title += '\nComparison: Circular Baseline vs Online vs Offline Optimization'
+    title += '\nComparison: No UAV vs UAV Deployment (Circular, Online, Offline)'
     ax.set_title(title, fontsize=15, fontweight='bold', pad=15)
     
     ax.grid(True, alpha=0.3, linestyle='--')
@@ -699,7 +790,7 @@ def plot_three_way_comparison(values, circular_rates, circular_stds,
     # Save
     save_path = f'results/{save_name}.png'
     plt.savefig(save_path, dpi=300, bbox_inches='tight')
-    print(f"  [OK] Saved 3-way comparison: {save_path}")
+    print(f"  ✓ Saved 3-way comparison: {save_path}")
     
     return fig
 
@@ -709,33 +800,39 @@ def plot_three_way_comparison(values, circular_rates, circular_stds,
 # ========================================================================
 
 if __name__ == '__main__':
-    print(f"\n" + "-" * 80)
+    print(f"\n" + "─" * 80)
     print(f"  SIMULATION CONFIGURATION")
-    print("-" * 80)
+    print("─" * 80)
     print(f"  UAV Parameters:")
-    print(f"    - CPU Frequency:  {BASE_CONFIG['uav_cpu_frequency']/1e9:.1f} GHz")
-    print(f"    - Max Velocity:   {BASE_CONFIG['uav_max_velocity']:.1f} m/s")
-    print(f"    - Height:         {BASE_CONFIG['uav_height']:.1f} m")
+    print(f"    • CPU Frequency:  {BASE_CONFIG['uav_cpu_frequency']/1e9:.1f} GHz")
+    print(f"    • Max Velocity:   {BASE_CONFIG['uav_max_velocity']:.1f} m/s")
+    print(f"    • Height:         {BASE_CONFIG['uav_height']:.1f} m")
     print(f"  \n  Network Parameters:")
-    print(f"    - Bandwidth:      {BASE_CONFIG['BW_total']/1e6:.1f} MHz")
-    print(f"    - IoT Devices:    {BASE_CONFIG['num_devices']}")
+    print(f"    • Bandwidth:      {BASE_CONFIG['BW_total']/1e6:.1f} MHz")
+    print(f"    • IoT Devices:    {BASE_CONFIG['num_devices']}")
     print(f"  \n  Task Parameters:")
-    print(f"    - Size Range:     {BASE_CONFIG['task_size_min']/1e6:.1f}-{BASE_CONFIG['task_size_max']/1e6:.1f} Mb")
-    print(f"    - Cycles/Bit:     {BASE_CONFIG['cycles_per_bit_min']:.0f}-{BASE_CONFIG['cycles_per_bit_max']:.0f}")
+    print(f"    • Size Range:     {BASE_CONFIG['task_size_min']/1e6:.1f}-{BASE_CONFIG['task_size_max']/1e6:.1f} Mb")
+    print(f"    • Cycles/Bit:     {BASE_CONFIG['cycles_per_bit_min']:.0f}-{BASE_CONFIG['cycles_per_bit_max']:.0f}")
     print(f"  \n  Simulation:")
-    print(f"    - Trials/Point:   {BASE_CONFIG['trials']}")
-    print(f"    - Time Steps:     {BASE_CONFIG['T']}")
-    print("-" * 80)
-    print(f"  RUNNING THREE-WAY COMPARISON")
-    print(f"    1. Circular Baseline (No Optimization)")
-    print(f"    2. Online Optimization (Receding Horizon)")
-    print(f"    3. Offline Optimization (Batch Gradient)")
-    print("-" * 80 + "\n")
+    print(f"    • Trials/Point:   {BASE_CONFIG['trials']}")
+    print(f"    • Time Steps:     {BASE_CONFIG['T']}")
+    print("─" * 80)
+    print(f"  RUNNING FOUR-WAY COMPARISON")
+    print(f"    1. No UAV (Local + BS only)")
+    print(f"    2. Circular Baseline (No Optimization)")
+    print(f"    3. Online Optimization (Receding Horizon)")
+    print(f"    4. Offline Optimization (Batch Gradient)")
+    print("─" * 80 + "\n")
     
-    # Run all sweeps with ALL THREE methods
+    # Run all sweeps with ALL FOUR methods
     all_results = {}
     
     for sweep_name, sweep_config in SWEEP_CONFIGS.items():
+        # Run NO UAV baseline
+        no_uav_rates, no_uav_stds = run_sweep(
+            sweep_name, sweep_config, BASE_CONFIG, 'no_uav', device
+        )
+        
         # Run CIRCULAR baseline
         circular_rates, circular_stds = run_sweep(
             sweep_name, sweep_config, BASE_CONFIG, 'circular', device
@@ -753,6 +850,10 @@ if __name__ == '__main__':
         
         all_results[sweep_name] = {
             'values': sweep_config['values'],
+            'no_uav': {
+                'completion_rates': no_uav_rates,
+                'completion_stds': no_uav_stds,
+            },
             'circular': {
                 'completion_rates': circular_rates,
                 'completion_stds': circular_stds,
@@ -767,9 +868,36 @@ if __name__ == '__main__':
             }
         }
         
-        # Plot three-way comparison
-        plot_three_way_comparison(
+        # # Plot individual results
+        # plot_sweep_results(
+        #     sweep_config['values'],
+        #     circular_rates,
+        #     circular_stds,
+        #     sweep_config,
+        #     f'{sweep_name}_circular'
+        # )
+        
+        # plot_sweep_results(
+        #     sweep_config['values'],
+        #     online_rates,
+        #     online_stds,
+        #     sweep_config,
+        #     f'{sweep_name}_online'
+        # )
+        
+        # plot_sweep_results(
+        #     sweep_config['values'],
+        #     offline_rates,
+        #     offline_stds,
+        #     sweep_config,
+        #     f'{sweep_name}_offline'
+        # )
+        
+        # Plot four-way comparison
+        plot_four_way_comparison(
             sweep_config['values'],
+            no_uav_rates,
+            no_uav_stds,
             circular_rates,
             circular_stds,
             online_rates,
@@ -780,34 +908,39 @@ if __name__ == '__main__':
             f'{sweep_name}_comparison'
         )
     
-    print("\n" + "=" * 80)
-    print("  [OK] ALL SWEEPS COMPLETED")
-    print("=" * 80)
+    print("\n" + "═" * 80)
+    print("  ✓ ALL SWEEPS COMPLETED")
+    print("═" * 80)
     
     # Summary
-    print("\n" + "=" * 80)
-    print("  PERFORMANCE SUMMARY: Baseline vs Online vs Offline")
-    print("=" * 80)
+    print("\n" + "═" * 80)
+    print("  PERFORMANCE SUMMARY: No UAV vs UAV Deployment")
+    print("═" * 80)
     for sweep_name, results in all_results.items():
+        no_uav_rates = results['no_uav']['completion_rates']
         circular_rates = results['circular']['completion_rates']
         online_rates = results['online']['completion_rates']
         offline_rates = results['offline']['completion_rates']
         
+        no_uav_avg = np.mean(no_uav_rates) * 100
         circular_avg = np.mean(circular_rates) * 100
         online_avg = np.mean(online_rates) * 100
         offline_avg = np.mean(offline_rates) * 100
         
+        uav_benefit = circular_avg - no_uav_avg
         online_improvement = online_avg - circular_avg
         offline_improvement = offline_avg - circular_avg
         
         print(f"\n  {sweep_name.upper().replace('_', ' ')}:")
-        print(f"  +-------------------------------------------------------------+")
-        print(f"  |  CIRCULAR  |  Min: {min(circular_rates)*100:5.1f}%  Max: {max(circular_rates)*100:5.1f}%  Avg: {circular_avg:5.1f}%  |")
-        print(f"  |  ONLINE    |  Min: {min(online_rates)*100:5.1f}%  Max: {max(online_rates)*100:5.1f}%  Avg: {online_avg:5.1f}%  |")
-        print(f"  |  OFFLINE   |  Min: {min(offline_rates)*100:5.1f}%  Max: {max(offline_rates)*100:5.1f}%  Avg: {offline_avg:5.1f}%  |")
-        print(f"  +-------------------------------------------------------------+")
-        print(f"  |  Online Improvement:   {online_improvement:+6.1f}%                         |")
-        print(f"  |  Offline Improvement:  {offline_improvement:+6.1f}%                         |")
-        print(f"  +-------------------------------------------------------------+")
+        print(f"  ┌─────────────────────────────────────────────────────────┐")
+        print(f"  │  NO UAV    │  Min: {min(no_uav_rates)*100:5.1f}%  Max: {max(no_uav_rates)*100:5.1f}%  Avg: {no_uav_avg:5.1f}%  │")
+        print(f"  │  CIRCULAR  │  Min: {min(circular_rates)*100:5.1f}%  Max: {max(circular_rates)*100:5.1f}%  Avg: {circular_avg:5.1f}%  │")
+        print(f"  │  ONLINE    │  Min: {min(online_rates)*100:5.1f}%  Max: {max(online_rates)*100:5.1f}%  Avg: {online_avg:5.1f}%  │")
+        print(f"  │  OFFLINE   │  Min: {min(offline_rates)*100:5.1f}%  Max: {max(offline_rates)*100:5.1f}%  Avg: {offline_avg:5.1f}%  │")
+        print(f"  ├─────────────────────────────────────────────────────────┤")
+        print(f"  │  UAV Deployment Benefit:   {uav_benefit:+6.1f}%                 │")
+        print(f"  │  Online vs Circular:       {online_improvement:+6.1f}%                 │")
+        print(f"  │  Offline vs Circular:      {offline_improvement:+6.1f}%                 │")
+        print(f"  └─────────────────────────────────────────────────────────┘")
     
     plt.show()

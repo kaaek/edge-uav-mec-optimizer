@@ -70,7 +70,8 @@ class OffloadingParams:
 def make_offloading_decision(task, iot_device, uav, bs, time_idx: int,
                             tdma_queue: TDMAQueue, params: OffloadingParams,
                             device='cuda', precomputed_bs_dist: Optional[float] = None,
-                            precomputed_uav_dist: Optional[float] = None) -> Optional[Tuple[str, float, float]]:
+                            precomputed_uav_dist: Optional[float] = None,
+                            verbose: bool = False) -> Optional[Tuple[str, float, float]]:
     """
     Choose offloading target to minimize serving time with TDMA awareness.
     
@@ -94,6 +95,7 @@ def make_offloading_decision(task, iot_device, uav, bs, time_idx: int,
         tdma_queue: TDMAQueue for transmission scheduling
         params: OffloadingParams object with system parameters
         device: 'cuda' or 'cpu'
+        verbose: If True, print detailed decision breakdown
     
     Returns:
         decision: Tuple of (target, total_time, channel_prob) or None if infeasible
@@ -101,13 +103,22 @@ def make_offloading_decision(task, iot_device, uav, bs, time_idx: int,
     """
     options = []
     
+    if verbose:
+        print(f"\n         [DECISION] Task {task.task_id}: slack={task.slack:.3f}s, size={task.length_bits/1e6:.2f}Mb")
+    
     # Estimate TDMA waiting time for offloaded options
     t_wait = estimate_tdma_wait_time(tdma_queue, params.current_time)
+    
+    if verbose:
+        print(f"         • TDMA wait time estimate: {t_wait:.3f}s")
     
     # ==================== Option 1: Local Processing ====================
     t_local = iot_device.compute_local_processing_time(task)
     p_local = 1.0  # Always reliable (no wireless channel)
     total_local = t_local  # No TDMA waiting for local
+    
+    if verbose:
+        print(f"         • LOCAL: t_comp={t_local:.3f}s, total={total_local:.3f}s, p={p_local:.3f}, feasible={total_local <= task.slack}")
     
     if total_local <= task.slack:
         options.append(('local', total_local, p_local))
@@ -132,6 +143,12 @@ def make_offloading_decision(task, iot_device, uav, bs, time_idx: int,
     snr_thresh_dB = 10 * np.log10(params.snr_thresh)
     p_bs = channel_success_probability(p_r_bs, params.noise_var, snr_thresh_dB, device=device).item()
     
+    if verbose:
+        iot_pos_np = iot_device.position.cpu().numpy()
+        bs_pos_np = bs.position.cpu().numpy()
+        dist_bs = np.sqrt(np.sum((iot_pos_np - bs_pos_np)**2))
+        print(f"         • BS: dist={dist_bs:.1f}m, t_offload={t_bs:.3f}s, total={t_bs + t_wait:.3f}s, p={p_bs:.3f}, feasible={p_bs >= params.P_min and (t_bs + t_wait) <= task.slack}")
+    
     # Check reliability and deadline
     if p_bs >= params.P_min:
         total_bs = t_bs + t_wait  # Includes TDMA waiting
@@ -139,34 +156,47 @@ def make_offloading_decision(task, iot_device, uav, bs, time_idx: int,
             options.append(('bs', total_bs, p_bs))
     
     # ==================== Option 3: UAV Offloading ====================
-    # Compute offload time using full BW_total
-    t_uav = compute_total_offload_time(
-        task, iot_device, uav, time_idx,
-        H_M=params.H_M, H=params.H, F=params.F,
-        P_T=params.P_T, P_N=params.noise_var,
-        bandwidth=params.BW_total  # Full bandwidth with TDMA
-    )
-    
-    # Compute channel reliability
-    uav_pos = uav.get_position(time_idx).unsqueeze(1)  # (2, 1)
-    p_r_uav = p_received(iot_pos, uav_pos, params.H_M, params.H, params.F,
-                         params.P_T, device=device)
-    
-    # Compute channel success probability using dBm values
-    p_uav = channel_success_probability(p_r_uav, params.noise_var, snr_thresh_dB, device=device).item()
-    
-    # Check reliability and deadline
-    if p_uav >= params.P_min:
-        total_uav = t_uav + t_wait  # Includes TDMA waiting
-        if total_uav <= task.slack:
-            options.append(('uav', total_uav, p_uav))
+    # Only evaluate UAV option if UAV exists (not None for no_uav baseline)
+    if uav is not None:
+        # Compute offload time using full BW_total
+        t_uav = compute_total_offload_time(
+            task, iot_device, uav, time_idx,
+            H_M=params.H_M, H=params.H, F=params.F,
+            P_T=params.P_T, P_N=params.noise_var,
+            bandwidth=params.BW_total  # Full bandwidth with TDMA
+        )
+        
+        # Compute channel reliability
+        uav_pos = uav.get_position(time_idx).unsqueeze(1)  # (2, 1)
+        p_r_uav = p_received(iot_pos, uav_pos, params.H_M, params.H, params.F,
+                             params.P_T, device=device)
+        
+        # Compute channel success probability using dBm values
+        p_uav = channel_success_probability(p_r_uav, params.noise_var, snr_thresh_dB, device=device).item()
+        
+        if verbose:
+            iot_pos_np = iot_device.position.cpu().numpy()
+            uav_pos_np = uav.get_position(time_idx).cpu().numpy()
+            dist_uav = np.sqrt(np.sum((iot_pos_np - uav_pos_np)**2))
+            print(f"         • UAV: dist={dist_uav:.1f}m, t_offload={t_uav:.3f}s, total={t_uav + t_wait:.3f}s, p={p_uav:.3f}, feasible={p_uav >= params.P_min and (t_uav + t_wait) <= task.slack}")
+        
+        # Check reliability and deadline
+        if p_uav >= params.P_min:
+            total_uav = t_uav + t_wait  # Includes TDMA waiting
+            if total_uav <= task.slack:
+                options.append(('uav', total_uav, p_uav))
     
     # ==================== Choose Best Option ====================
     if not options:
+        if verbose:
+            print(f"         → DECISION: NONE (no feasible options)")
         return None  # No feasible option (all violate deadline or reliability)
     
     # Choose option with minimum total serving time
     decision = min(options, key=lambda x: x[1])
+    
+    if verbose:
+        print(f"         → DECISION: {decision[0].upper()} (time={decision[1]:.3f}s, p={decision[2]:.3f})")
     
     return decision
 
@@ -210,9 +240,12 @@ def greedy_offloading_batch(tasks: list, iot_devices: list, uav, bs,
         # Pre-compute all IoT-to-BS distances: (N,)
         precomputed_bs_distances = torch.cdist(iot_positions_tensor, bs_pos_tensor).squeeze(1)  # (N,)
         
-        # Pre-compute all IoT-to-UAV distances for all timesteps: (N, T)
+        # Pre-compute all IoT-to-UAV distances for all timesteps: (N, T) - if UAV exists
         # UAV position is (2, T), transpose to (T, 2) for cdist
-        precomputed_uav_distances = torch.cdist(iot_positions_tensor, uav.position.T)  # (N, T)
+        if uav is not None:
+            precomputed_uav_distances = torch.cdist(iot_positions_tensor, uav.position.T)  # (N, T)
+        else:
+            precomputed_uav_distances = None  # No UAV baseline
     else:
         precomputed_bs_distances = None
         precomputed_uav_distances = None
@@ -230,11 +263,14 @@ def greedy_offloading_batch(tasks: list, iot_devices: list, uav, bs,
         uav_dist = precomputed_uav_distances[i, time_idx].item() if precomputed_uav_distances is not None else None
         
         # Make offloading decision with pre-computed distances
+        # Verbose output for first 3 tasks only
+        verbose = (i < 3)
         decision = make_offloading_decision(
             task, iot_device, uav, bs, time_idx,
             tdma_queue, params, device=device,
             precomputed_bs_dist=bs_dist,
-            precomputed_uav_dist=uav_dist
+            precomputed_uav_dist=uav_dist,
+            verbose=verbose
         )
         
         if decision is None:

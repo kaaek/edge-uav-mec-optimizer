@@ -12,21 +12,27 @@ Implements Model Predictive Control (MPC) / Receding Horizon approach:
 import torch
 import numpy as np
 from typing import List, Tuple, Optional
+from ..common import p_received
+from ..common.channel_reliability import channel_success_probability
 
 
 class RecedingHorizonOptimizer:
     """
     Online trajectory optimizer using receding horizon control.
     
+    Objective: Maximize expected completed tasks within planning horizon
+    
     At each time step:
     1. Observe current state (position, pending tasks, deadlines)
-    2. Optimize next H time steps (horizon)
-    3. Execute first step
+    2. Optimize next H positions to maximize task completion probability
+    3. Execute first position
     4. Repeat
     """
     
     def __init__(self, horizon: int = 10, learning_rate: float = 5.0,
-                 opt_iterations: int = 20, device='cuda'):
+                 opt_iterations: int = 20, device='cuda',
+                 uav_cpu_freq: float = 5e9, uav_height: float = 50.0,
+                 params=None):
         """
         Initialize receding horizon optimizer.
         
@@ -35,11 +41,17 @@ class RecedingHorizonOptimizer:
             learning_rate: Step size for gradient descent
             opt_iterations: Number of optimization iterations per step
             device: 'cuda' or 'cpu'
+            uav_cpu_freq: UAV CPU frequency for computation time calculation
+            uav_height: UAV altitude for 3D distance calculation
+            params: OffloadingParams object for channel calculations
         """
         self.horizon = horizon
         self.learning_rate = learning_rate
         self.opt_iterations = opt_iterations
         self.device = device
+        self.uav_cpu_freq = uav_cpu_freq
+        self.uav_height = uav_height
+        self.params = params
     
     def optimize_next_position(self, current_pos: torch.Tensor, current_time: float,
                                pending_tasks: List, task_devices: List, iot_devices: List,
@@ -67,47 +79,58 @@ class RecedingHorizonOptimizer:
             # No pending tasks - stay at current position
             return current_pos
         
-        # Compute target: weighted centroid of devices with pending tasks
-        device_positions = []
-        weights = []
-        
-        for task, iot_device in zip(pending_tasks, task_devices):
-            device_positions.append(iot_device.position)
-            # Weight by urgency (inverse of remaining slack)
-            remaining_slack = task.slack - (current_time - task.time_generated)
-            weight = 1.0 / max(remaining_slack, 0.1)  # Avoid division by zero
-            weights.append(weight)
-        
-        if device_positions:
-            device_positions = torch.stack(device_positions, dim=1)  # (2, M_pending)
-            weights = torch.tensor(weights, device=self.device)
-            weights = weights / weights.sum()  # Normalize
-            
-            # Weighted centroid
-            target_pos = (device_positions * weights.unsqueeze(0)).sum(dim=1)  # (2,)
-        else:
-            # Fallback: move toward cluster center
-            iot_positions = torch.stack([iot.position for iot in iot_devices], dim=1)
-            target_pos = iot_positions.mean(dim=1)
-        
         # Optimize trajectory over horizon
         H = min(self.horizon, len(time_indices) - current_idx)
         
         if H <= 1:
-            # Last time step or horizon too short - move directly toward target
+            # Last time step - simple heuristic: move toward urgent tasks
+            device_positions = []
+            weights = []
+            
+            for task, iot_device in zip(pending_tasks, task_devices):
+                device_positions.append(iot_device.position)
+                remaining_slack = task.slack - (current_time - task.time_generated)
+                weight = 1.0 / max(remaining_slack, 0.1)
+                weights.append(weight)
+            
+            if device_positions:
+                device_positions = torch.stack(device_positions, dim=1)
+                weights = torch.tensor(weights, device=self.device)
+                weights = weights / weights.sum()
+                target_pos = (device_positions * weights.unsqueeze(0)).sum(dim=1)
+            else:
+                target_pos = current_pos
+            
+            # Clamp to max velocity
             direction = target_pos - current_pos
             distance = torch.sqrt(torch.sum(direction ** 2))
             
             if distance > max_velocity * dt:
-                # Clamp to max velocity
                 next_pos = current_pos + (direction / distance) * max_velocity * dt
             else:
                 next_pos = target_pos
             
             return next_pos
         
-        # Initialize horizon trajectory
+        # Initialize horizon trajectory - start with straight line toward task cluster
         horizon_positions = torch.zeros(2, H, device=self.device, requires_grad=True)
+        
+        # Compute initial target as weighted centroid
+        device_positions = []
+        weights = []
+        for task, iot_device in zip(pending_tasks, task_devices):
+            device_positions.append(iot_device.position)
+            remaining_slack = task.slack - (current_time - task.time_generated)
+            weight = 1.0 / max(remaining_slack, 0.1)
+            weights.append(weight)
+        
+        if device_positions:
+            device_positions_tensor = torch.stack(device_positions, dim=1)
+            weights_tensor = torch.tensor(weights, device=self.device)
+            weights_tensor = weights_tensor / weights_tensor.sum()
+            target_pos = (device_positions_tensor * weights_tensor.unsqueeze(0)).sum(dim=1)
+        else:
+            target_pos = current_pos
         
         with torch.no_grad():
             # Linear path toward target
@@ -118,33 +141,89 @@ class RecedingHorizonOptimizer:
         horizon_positions = horizon_positions.detach().requires_grad_(True)
         optimizer = torch.optim.Adam([horizon_positions], lr=self.learning_rate)
         
-        # Pre-compute pending device positions and urgencies (VECTORIZED)
-        if pending_tasks:
-            pending_positions = torch.stack([iot_device.position for iot_device in task_devices], dim=0)  # (N_pending, 2)
+        # Optimize horizon to maximize task completion
+        avg_tdma_wait = 0.1  # Estimated TDMA wait time
         
-        # Optimize horizon
-        for _ in range(self.opt_iterations):
+        for opt_iter in range(self.opt_iterations):
             optimizer.zero_grad()
             
-            # VECTORIZED: Compute all distances at once
-            if pending_tasks:
-                # Compute distances: (H, N_pending)
-                distances = torch.cdist(
-                    horizon_positions.T,  # (H, 2)
-                    pending_positions     # (N_pending, 2)
-                )  # Result: (H, N_pending)
-                
-                # Compute urgencies for each task at each horizon step
-                loss = 0.0
-                for h in range(H):
-                    for i, task in enumerate(pending_tasks):
-                        remaining_slack = task.slack - (current_time + h * dt - task.time_generated)
-                        if remaining_slack > 0:  # Task still viable
-                            urgency = 1.0 / max(remaining_slack, 0.1)
-                            loss += urgency * distances[h, i]
-            else:
-                loss = 0.0
+            # Compute expected completions for pending tasks
+            expected_completions = torch.tensor(0.0, device=self.device)
             
+            for task_idx, (task, iot_device) in enumerate(zip(pending_tasks, task_devices)):
+                # Determine which horizon step is closest to task generation/deadline
+                task_age = current_time - task.time_generated
+                remaining_slack = task.slack - task_age
+                
+                if remaining_slack <= 0:
+                    continue  # Task already expired
+                
+                # Use average position over horizon for this task
+                # Weight earlier positions more for urgent tasks
+                urgency_weights = torch.exp(-torch.arange(H, device=self.device, dtype=torch.float32) * (1.0 / max(remaining_slack, 0.1)))
+                urgency_weights = urgency_weights / urgency_weights.sum()
+                
+                avg_uav_pos = (horizon_positions * urgency_weights.unsqueeze(0)).sum(dim=1)  # (2,)
+                
+                # ============================================================
+                # OPTION 1: LOCAL PROCESSING
+                # ============================================================
+                t_local = (task.length_bits * task.computation_density) / iot_device.cpu_frequency
+                local_slack_margin = torch.tensor(remaining_slack - t_local, device=self.device)
+                local_score = torch.sigmoid(5.0 * local_slack_margin) * 1.0
+                
+                # ============================================================
+                # OPTION 2: BASE STATION OFFLOADING (Okumura-Hata)
+                # ============================================================
+                # Note: bs is passed through task_devices context, using device position
+                iot_pos = iot_device.position.unsqueeze(1)  # (2, 1)
+                
+                # Get BS from params or use default position
+                bs_pos_x, bs_pos_y = 200.0, 200.0  # Default BS position
+                bs_pos = torch.tensor([[bs_pos_x], [bs_pos_y]], dtype=torch.float32, device=self.device)
+                bs_cpu = 10e9  # Default BS CPU
+                bs_height = 30.0  # Default BS height
+                
+                p_r_bs = p_received(iot_pos, bs_pos, self.params.H_M, bs_height, self.params.F, self.params.P_T, device=self.device)
+                P_r_bs_lin = 10.0 ** (p_r_bs / 10.0)
+                P_n_lin = 10.0 ** (self.params.noise_var / 10.0)
+                snr_bs = P_r_bs_lin / P_n_lin
+                data_rate_bs = self.params.BW_total * torch.log2(1.0 + snr_bs).squeeze()
+                
+                transmission_time_bs = task.length_bits / (data_rate_bs + 1e-6)
+                computation_time_bs = (task.length_bits * task.computation_density) / bs_cpu
+                t_bs = transmission_time_bs + computation_time_bs + avg_tdma_wait
+                
+                p_bs_reliable = torch.sigmoid(2.0 * (snr_bs.squeeze() - self.params.snr_thresh))
+                bs_slack_margin = torch.tensor(remaining_slack, device=self.device) - t_bs
+                bs_score = torch.sigmoid(5.0 * bs_slack_margin) * p_bs_reliable
+                
+                # ============================================================
+                # OPTION 3: UAV OFFLOADING (Okumura-Hata)
+                # ============================================================
+                uav_pos = avg_uav_pos.unsqueeze(1)  # (2, 1)
+                p_r_uav = p_received(iot_pos, uav_pos, self.params.H_M, self.params.H, self.params.F, self.params.P_T, device=self.device)
+                P_r_uav_lin = 10.0 ** (p_r_uav / 10.0)
+                snr_uav = P_r_uav_lin / P_n_lin
+                data_rate_uav = self.params.BW_total * torch.log2(1.0 + snr_uav).squeeze()
+                
+                transmission_time_uav = task.length_bits / (data_rate_uav + 1e-6)
+                computation_time_uav = (task.length_bits * task.computation_density) / self.uav_cpu_freq
+                t_uav = transmission_time_uav + computation_time_uav + avg_tdma_wait
+                
+                p_uav_reliable = torch.sigmoid(2.0 * (snr_uav.squeeze() - self.params.snr_thresh))
+                uav_slack_margin = torch.tensor(remaining_slack, device=self.device) - t_uav
+                uav_score = torch.sigmoid(5.0 * uav_slack_margin) * p_uav_reliable
+                
+                # ============================================================
+                # SOFT DECISION: Weighted combination
+                # ============================================================
+                scores = torch.stack([local_score, bs_score, uav_score])
+                weights = torch.softmax(10.0 * scores, dim=0)
+                expected_completion = (weights * scores).sum()
+                expected_completions += expected_completion
+            
+            # Velocity constraints
             # Velocity constraints
             # First step from current position
             vel_0 = torch.sqrt(torch.sum((horizon_positions[:, 0] - current_pos) ** 2)) / dt
@@ -156,7 +235,8 @@ class RecedingHorizonOptimizer:
                 vel_h = torch.sqrt(torch.sum((horizon_positions[:, h+1] - horizon_positions[:, h]) ** 2)) / dt
                 vel_penalty += 100.0 * torch.relu(vel_h - max_velocity)
             
-            total_loss = loss + vel_penalty_0 + vel_penalty
+            # Total loss: MAXIMIZE completions = MINIMIZE negative completions
+            total_loss = -expected_completions + vel_penalty_0 + vel_penalty
             total_loss.backward()
             optimizer.step()
         
@@ -200,12 +280,15 @@ def optimize_trajectory_online(iot_devices: List, tasks: List, bs,
     trajectory = torch.zeros(2, T, device=device)
     trajectory[:, 0] = torch.tensor(initial_position, dtype=torch.float32, device=device)
     
-    # Create optimizer
+    # Create optimizer with UAV parameters
     optimizer = RecedingHorizonOptimizer(
         horizon=horizon,
-        learning_rate=5.0,
-        opt_iterations=20,
-        device=device
+        learning_rate=2.0,
+        opt_iterations=25,
+        device=device,
+        uav_cpu_freq=uav_cpu_frequency,
+        uav_height=uav_height,
+        params=params
     )
     
     # Create task-device mapping from task metadata
