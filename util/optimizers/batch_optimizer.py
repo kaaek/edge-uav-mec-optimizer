@@ -1,10 +1,7 @@
 """
 Batch optimizer for parallel processing of multiple scenarios on GPU
-Author: GitHub Copilot
-Date: January 2025
-
-This module provides GPU-accelerated batch optimization for running
-multiple independent optimization problems in parallel.
+Author: Khalil El Kaaki and Joe Abi Samra
+Date: December 2025
 """
 
 import torch
@@ -63,9 +60,6 @@ def batch_optimize_trials(user_pos_trials, M, N, AREA, H_M, H, F, P_T, P_N,
         )
         
         return trial_idx, baseline, optimized_throughput
-    
-    # Use ThreadPoolExecutor for parallel execution
-    # Note: num_workers=2 recommended to avoid GPU contention
     with ThreadPoolExecutor(max_workers=num_workers) as executor:
         # Submit all trials
         futures = {

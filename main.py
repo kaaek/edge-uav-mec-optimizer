@@ -108,29 +108,6 @@ BASE_CONFIG = {
 # Sweep Configurations
 # ========================================================================
 SWEEP_CONFIGS = {
-    # 'uav_max_velocity': {
-    #     'values': [5.0, 10.0, 15.0, 20.0, 25.0, 30.0],  # m/s
-    #     'param': 'uav_max_velocity',
-    #     'xlabel': 'UAV Maximum Velocity (m/s)',
-    #     'ylabel': 'Task Completion Rate (%)',
-    #     'title': 'Impact of UAV Mobility on Task Completion Rate',
-    # },
-    # 'uav_cpu_frequency': {
-    #     'values': [2e9, 3e9, 4e9, 5e9, 6e9, 8e9, 10e9],  # Hz
-    #     'param': 'uav_cpu_frequency',
-    #     'xlabel': 'UAV CPU Frequency (GHz)',
-    #     'ylabel': 'Task Completion Rate (%)',
-    #     'title': 'Impact of UAV Computing Capacity on Task Completion Rate',
-    #     'scale': 1e9,
-    # },
-    # 'bandwidth': {
-    #     'values': [5e6, 10e6, 20e6, 40e6, 60e6, 80e6, 100e6],  # Hz
-    #     'param': 'BW_total',
-    #     'xlabel': 'Total Bandwidth (MHz)',
-    #     'ylabel': 'Task Completion Rate (%)',
-    #     'title': 'Impact of Communication Bandwidth on Task Completion Rate',
-    #     'scale': 1e6,
-    # },
     'task_size': {
         'values': [(1e6, 3e6), (2e6, 6e6), (3e6, 9e6)],  # (min, max) bits
         'param': 'task_size',
@@ -139,13 +116,6 @@ SWEEP_CONFIGS = {
         'title': 'Impact of Task Data Size on Task Completion Rate',
         'scale': 1e6,
     },
-    # 'cycles_per_bit': {
-    #     'values': [(100, 500), (300, 800), (500, 1500), (1000, 2000), (1500, 3000)],  # (min, max)
-    #     'param': 'cycles_per_bit',
-    #     'xlabel': 'Average Computational Density (Cycles/Bit)',
-    #     'ylabel': 'Task Completion Rate (%)',
-    #     'title': 'Impact of Task Computational Complexity on Completion Rate',
-    # },
     'num_devices': {
         'values': [2, 5, 10, 15, 20],
         'param': 'num_devices',

@@ -1,7 +1,7 @@
 """
 Ground Base Station data structure for edge computing system
 Author: Khalil El Kaaki & Joe Abi Samra
-Date: November 2025
+Date: December 2025
 """
 
 import torch

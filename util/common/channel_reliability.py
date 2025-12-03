@@ -18,7 +18,7 @@ def rayleigh_channel_gain(shape, scale=1.0, device='cuda'):
     
     Args:
         shape: Shape of output tensor
-        scale: Scale parameter (σ) of Rayleigh distribution
+        scale: Scale parameter (sigma) of Rayleigh distribution
         device: 'cuda' or 'cpu'
     
     Returns:
@@ -26,8 +26,7 @@ def rayleigh_channel_gain(shape, scale=1.0, device='cuda'):
     """
     # Generate Rayleigh-distributed amplitude
     if device == 'cuda':
-        # Use exponential distribution for power gain |h|²
-        mean = 2 * scale**2  # E[|h|²] = 2σ²
+        mean = 2 * scale**2
         channel_gain = torch.distributions.Exponential(1.0 / mean).sample(shape).to(device)
     else:
         # Use numpy's rayleigh for amplitude, then square for power
@@ -39,9 +38,7 @@ def rayleigh_channel_gain(shape, scale=1.0, device='cuda'):
 
 def compute_instantaneous_snr(P_r_dBm, rayleigh_gain, noise_variance_dBm):
     """
-    Compute instantaneous SNR with Rayleigh fading.
-    
-    SNR = (P_r × |h|²) / σ_n²
+    Compute instantaneous SNR with Rayleigh fading. Simplified for tests, is deprecated now.
     
     Args:
         P_r_dBm: Received power in dBm (from path loss model)
@@ -66,16 +63,14 @@ def channel_failure_probability(P_r_dBm, noise_variance_dBm, snr_threshold_dB,
     """
     Compute probability that channel quality falls below SNR threshold.
     
-    For Rayleigh fading with mean channel gain E[|h|²] = 2σ²:
+    For Rayleigh fading with mean channel gain:
     P(failure) = P(SNR < SNR_threshold) = 1 - exp(-SNR_threshold / SNR_avg)
-    
-    where SNR_avg = P_r × E[|h|²] / σ_n²
     
     Args:
         P_r_dBm: Received power in dBm (tensor, any shape)
         noise_variance_dBm: Noise variance in dBm (scalar)
         snr_threshold_dB: Minimum required SNR in dB (scalar)
-        rayleigh_scale: Scale parameter σ for Rayleigh distribution
+        rayleigh_scale: Scale parameter sigma for Rayleigh distribution
         device: 'cuda' or 'cpu'
     
     Returns:
@@ -93,7 +88,6 @@ def channel_failure_probability(P_r_dBm, noise_variance_dBm, snr_threshold_dB,
     snr_avg = (P_r_linear * mean_channel_gain) / noise_variance_linear
     
     # Outage probability (channel failure probability)
-    # P(SNR < threshold) = 1 - exp(-threshold / SNR_avg)
     p_failure = 1.0 - torch.exp(-snr_threshold_linear / snr_avg)
     
     # Clamp to [0, 1] for numerical stability

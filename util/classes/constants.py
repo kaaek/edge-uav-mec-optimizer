@@ -1,6 +1,7 @@
 """
 Constants module
 Author: Khalil El Kaaki & Joe Abi Samra
+Date: November 2025
 """
 
 def constants():

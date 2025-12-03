@@ -1,7 +1,3 @@
-"""
-Utility classes for Edge UAV-MEC optimizer.
-"""
-
 from .constants import constants
 from .benchmark_vals import benchmark_vals
 from .uav import UAV

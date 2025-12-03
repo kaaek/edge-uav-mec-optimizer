@@ -2,11 +2,6 @@
 Online UAV Trajectory Optimization with Receding Horizon
 Author: Khalil El Kaaki & Joe Abi Samra
 Date: November 2025
-
-Implements Model Predictive Control (MPC) / Receding Horizon approach:
-- At each time step, optimize next N positions
-- Execute first position, then re-optimize
-- Accounts for current tasks, deadlines, and channel conditions
 """
 
 import torch

@@ -1,6 +1,7 @@
 """
 Benchmark values for parameter sweeps
 Author: Khalil El Kaaki & Joe Abi Samra
+Date: November 2025
 """
 
 import numpy as np
