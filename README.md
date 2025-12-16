@@ -3,6 +3,7 @@
 **Authors:** Khalil El Kaaki & Joe Abi Samra  
 **Course:** EECE 454 - Computer Network Modelling and Optimization  
 **Date:** December 2025
+**Research Paper:** A comprehensive research paper detailing the methodology, results, and analysis is included in [`Mock Research Paper.pdf`](Mock%20Research%20Paper.pdf).
 
 ## Overview
 
@@ -90,12 +91,12 @@ To enable GPU acceleration, install the NVIDIA CUDA Toolkit:
    git checkout phase-2-maximization-of-completed-tasks-using-a-probabilistic-channel-model
    ```
 
-2. **Install Python dependencies:**
+2. **Navigate to the source directory:**
    ```bash
-   pip install -r requirements.txt
+   cd src
    ```
 
-3. **Install PyTorch with CUDA support** (choose based on your CUDA version):
+4. **Install PyTorch with CUDA support** (choose based on your CUDA version):
    ```bash
    # CUDA 11.8
    pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu118
@@ -103,6 +104,11 @@ To enable GPU acceleration, install the NVIDIA CUDA Toolkit:
    pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121
    # CPU only (slower)
    pip install torch torchvision torchaudio
+   ```
+
+5. **Verify GPU Detection:**
+   ```bash
+   python -c "import torch; print(f'CUDA available: {torch.cuda.is_available()}'); print(f'GPU: {torch.cuda.get_device_name(0) if torch.cuda.is_available() else \"None\"}')"
    ```
 
 4. **Verify GPU Detection:**
@@ -126,35 +132,36 @@ pip install psutil
 ## Repository Structure
 ```
 edge-uav-mec-optimizer/
-├── main_task_offloading.py              # Main entry point - runs all sweeps
-├── requirements.txt                      # Python dependencies
-├── docs/
-│   └── optimization_formulation.md      # Complete MINLP mathematical formulation
-├── util/
-│   ├── classes/                         # Core data models
-│   │   ├── uav.py                       # UAV with trajectory and CPU
-│   │   ├── base_station.py              # Fixed BS with CPU
-│   │   ├── iot_device.py                # Device with Poisson task generation
-│   │   ├── task.py                      # Task (size, density, deadline, arrival)
-│   │   └── constants.py                 # System-wide parameters
-│   ├── schedulers/                      # Offloading and channel access
-│   │   ├── offloading_decision.py       # Greedy TDMA-aware scheduler
-│   │   └── tdma_scheduler.py            # TDMA queue management
-│   ├── optimizers/                      # Trajectory optimization
-│   │   ├── online_trajectory_optimizer.py   # MPC receding horizon (20 iter/step)
-│   │   └── trajectory_optimizer.py          # Offline batch (25 iterations)
-│   ├── common/                          # Channel models
-│   │   └── channel_reliability.py       # Okumura-Hata + sigmoid reliability
-│   ├── plotter/                         # Visualization utilities
-│   └── clustering/                      # Legacy Phase 1 (not used)
-└── results/                             # Auto-generated plots and data
-```
-
+├── Mock Research Paper.pdf              # Research paper submission
+├── README.md                            # This file
+├── src/                                 # Source code directory
+│   ├── main.py                          # Main entry point - runs all sweeps
+│   ├── requirements.txt                 # Python dependencies
+│   └── util/                            # Core utilities package
+│       ├── classes/                     # Core data models
+│       │   ├── uav.py                   # UAV with trajectory and CPU
+│       │   ├── base_station.py          # Fixed BS with CPU
+│       │   ├── iot_device.py            # Device with Poisson task generation
+│       │   ├── task.py                  # Task (size, density, deadline, arrival)
+│       │   ├── constants.py             # System-wide parameters
+│       │   └── benchmark_vals.py        # Benchmark configuration values
+│       ├── schedulers/                  # Offloading and channel access
+│       │   ├── offloading_decision.py   # Greedy TDMA-aware scheduler
+│       │   └── tdma_scheduler.py        # TDMA queue management
+│       ├── optimizers/                  # Trajectory optimization
+│       │   ├── online_trajectory_optimizer.py   # MPC receding horizon (20 iter/step)
+│       │   ├── trajectory_optimizer.py          # Offline batch (25 iterations)
+│       │   ├── batch_optimizer.py       # Batch optimization utilities
+│       │   └── helpers/                 # Optimization helper functions
+│       ├── common/                      # Channel models
+│       │   └── channel_reliability.py   # Okumura-Hata + sigmoid reliability
+│       ├── plotter/                     # Visualization utilities
 ## Quick Start
 
 ### Run Complete Evaluation
 Execute all parameter sweeps with four-way comparison (260 total simulations):
 ```bash
+cd src
 python main.py
 ```
 
@@ -166,6 +173,10 @@ python main.py
   - `*_four_way_comparison.png`: Main performance comparison
   - `*_no_uav.png`, `*_circular.png`, `*_online.png`, `*_offline.png`: Individual method details
 - Terminal summary: Average completion rates and UAV deployment benefit
+
+### Configuration
+
+Edit `BASE_CONFIG` in `src/main.py`: UAV deployment benefit
 
 ### Configuration
 
@@ -300,7 +311,7 @@ If you use this work in your research, please cite:
   course = {EECE 454 - Computer Network Modelling and Optimization},
   institution = {American University of Beirut},
   url = {https://github.com/kaaek/edge-uav-mec-optimizer},
-  branch = {phase-2-maximization-of-completed-tasks-using-a-probabilistic-channel-model}
+  branch = {man}
 }
 ```
 
@@ -314,7 +325,7 @@ Educational and research use only. Code provided as-is for academic purposes.
 - **Joe Abi Samra** — [GitHub @ovbismark74](https://github.com/ovbismark74)
 
 **Repository:** https://github.com/kaaek/edge-uav-mec-optimizer  
-**Branch:** `phase-2-maximization-of-completed-tasks-using-a-probabilistic-channel-model`
+**Branch:** `main`
 
 ---
 
