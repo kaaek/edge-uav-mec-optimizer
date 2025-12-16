@@ -3,7 +3,7 @@
 **Authors:** Khalil El Kaaki & Joe Abi Samra  
 **Course:** EECE 454 - Computer Network Modelling and Optimization  
 **Date:** December 2025
-**Research Paper:** A comprehensive research paper detailing the methodology, results, and analysis is included in [Mock Research Paper.pdf](Mock%20Research%20Paper.pdf).
+**Research Paper:** A comprehensive research paper detailing the methodology, results, and analysis is included in `Mock Research Paper.pdf`.
 
 ## Overview
 
